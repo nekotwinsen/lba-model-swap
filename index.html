@@ -1,0 +1,1701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LBA Model Converter</title>
+<!--
+  LBA model viewer and converter - Little Big Adventure 1, LBA2 and the LBA2 demo of 1996.
+  Runs locally: the game files are picked from your own disk and never leave the browser.
+  This page contains no game data. Part of the twine engine tools (GPL).
+
+  Formats (ported from engines/twine):
+  - HQR: resources/hqr.cpp (offset table, entry header: real size, compressed size, mode 0/1/2;
+    LZ in modes 1 and 2: a flag byte per 8 items, a copy is a uint16 with length (w & 15) + mode + 1
+    and distance (w >> 4) + 1)
+  - bodies: parser/body.cpp (LBA1, LBA2 and loadLba2DemoFromStream), colour mapping between the
+    games as in resources/lba2models.cpp (ramps for shaded polygons, nearest colour for the rest)
+-->
+<style>
+:root {
+  --bg: #f4f4f1; --panel: #ffffff; --ink: #1d1f24; --muted: #646a75; --line: #d9dad6;
+  --accent: #2f6fd0; --accent-ink: #ffffff; --err-bg: #fde8e6; --err: #a3261b; --ok-bg: #e5f3e7; --ok: #24683a;
+  --card: #fafaf8; --sel: #dbe7fb; --view: #22252c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #17191d; --panel: #20232a; --ink: #e7e8ea; --muted: #9aa0aa; --line: #343841;
+    --accent: #6b9cf0; --accent-ink: #0d1320; --err-bg: #3b1d1b; --err: #ffb4aa; --ok-bg: #1b3222; --ok: #9fd9ad;
+    --card: #1c1f25; --sel: #263a5c; --view: #22252c;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #17191d; --panel: #20232a; --ink: #e7e8ea; --muted: #9aa0aa; --line: #343841;
+  --accent: #6b9cf0; --accent-ink: #0d1320; --err-bg: #3b1d1b; --err: #ffb4aa; --ok-bg: #1b3222; --ok: #9fd9ad;
+  --card: #1c1f25; --sel: #263a5c; --view: #22252c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { padding: 14px 16px 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
+h1 { margin: 0; font-size: 20px; }
+.hint { margin: 2px 0 0; color: var(--muted); }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 12px; padding: 12px 16px; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+label { display: block; margin: 6px 0 2px; color: var(--muted); font-size: 12px; }
+input[type=file] { max-width: 100%; }
+input[type=number] { width: 80px; }
+input, select, button { font: inherit; color: var(--ink); }
+select, input[type=number] { background: var(--card); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
+button { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 5px; padding: 6px 10px; cursor: pointer; margin: 4px 4px 0 0; }
+button:disabled { opacity: .45; cursor: default; }
+button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row label { margin: 0; }
+.small { font-size: 12px; color: var(--muted); }
+#msg { margin: 0 16px; }
+.msg { padding: 8px 10px; border-radius: 6px; margin-top: 8px; white-space: pre-wrap; }
+.msg.error { background: var(--err-bg); color: var(--err); }
+.msg.ok { background: var(--ok-bg); color: var(--ok); }
+#list { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; max-height: 52vh; overflow: auto; padding-right: 2px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 3px; margin: 0; color: var(--ink); text-align: center; font-size: 11px; line-height: 1.25; }
+.card canvas { width: 72px; height: 72px; display: block; margin: 0 auto 2px; }
+.card.sel { background: var(--sel); border-color: var(--accent); }
+.card.bad { opacity: .5; }
+.card b { font-size: 12px; }
+#viewWrap { position: relative; height: min(62vh, 640px); min-height: 320px; background: var(--view); border-radius: 8px; overflow: hidden; }
+#view { width: 100%; height: 100%; display: block; }
+#viewNote { position: absolute; left: 10px; top: 8px; color: #c9ccd2; font-size: 12px; pointer-events: none; }
+#info { font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+.note { border-left: 3px solid var(--accent); padding: 4px 8px; color: var(--muted); font-size: 12px; margin: 8px 0; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header>
+  <h1>LBA Model Converter</h1>
+  <p class="hint" lang="nl">Kies BODY.HQR en RESS.HQR uit je spelmap</p>
+</header>
+<div id="msg"></div>
+<main>
+  <div>
+    <section>
+      <h2>Files</h2>
+      <label for="bodyFile">Bodies: BODY.HQR (or any HQR with bodies, or one raw body)</label>
+      <input type="file" id="bodyFile">
+      <div class="row" style="margin-top:6px">
+        <label for="fmt">Format</label>
+        <select id="fmt">
+          <option value="auto">auto detect</option>
+          <option value="lba1">LBA1</option>
+          <option value="lba2">LBA2</option>
+          <option value="demo">LBA2 demo (1996)</option>
+        </select>
+        <span id="detected" class="small"></span>
+      </div>
+      <label for="ressFile">Palette: RESS.HQR of the same game (or a 768-byte palette)</label>
+      <input type="file" id="ressFile">
+      <div class="row" style="margin-top:6px">
+        <label for="palIndex">entry</label>
+        <input type="number" id="palIndex" value="0" min="0">
+        <span id="palName" class="small">no palette: grey ramps</span>
+      </div>
+    </section>
+    <section>
+      <h2>Bodies <span id="count" class="small"></span></h2>
+      <div id="list"><span class="small">Load a BODY.HQR to see its bodies.</span></div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <div class="row" style="margin-bottom:8px">
+        <label><input type="checkbox" id="optWire"> wireframe</label>
+        <label><input type="checkbox" id="optBones"> bones</label>
+        <label><input type="checkbox" id="optSmooth" checked> smooth (gouraud)</label>
+        <label><input type="checkbox" id="optGrid" checked> floor grid</label>
+        <button class="ghost" id="resetView">Reset view</button>
+      </div>
+      <div id="viewWrap"><canvas id="view"></canvas><div id="viewNote">No body selected</div></div>
+      <div id="info" style="margin-top:8px"></div>
+    </section>
+    <section>
+      <h2>Export</h2>
+      <div class="row">
+        <label for="expScale">scale</label><input type="number" id="expScale" value="0.001" step="0.0001" min="0">
+        <label><input type="checkbox" id="expBake"> bake the game's shading into the colours</label>
+      </div>
+      <button id="expGlb" disabled>Download .glb</button>
+      <button id="expObj" disabled>Download .obj + .mtl</button>
+      <p class="small">GLB: vertex colours, a skin with one joint node per bone (riggable). OBJ: a group per bone, a material per palette colour, vertex colours.</p>
+    </section>
+    <section>
+      <h2>Convert</h2>
+      <div class="row">
+        <label for="convTarget">Convert to</label>
+        <select id="convTarget">
+          <option value="lba1">LBA1 body</option>
+          <option value="lba2">LBA2 body</option>
+          <option value="demo">LBA2 demo body</option>
+        </select>
+      </div>
+      <label for="tPalFile">Target palette: RESS.HQR of the target game (for the colour mapping)</label>
+      <input type="file" id="tPalFile">
+      <div class="row" style="margin-top:6px">
+        <label for="tPalIndex">entry</label><input type="number" id="tPalIndex" value="0" min="0">
+        <span id="tPalName" class="small">none</span>
+      </div>
+      <button id="convBin" disabled>Download body (.bin)</button>
+      <label for="tHqrFile" style="margin-top:10px">Replace in HQR: the HQR to copy (it is not changed)</label>
+      <input type="file" id="tHqrFile">
+      <div class="row" style="margin-top:6px">
+        <label for="tHqrIndex">entry</label><input type="number" id="tHqrIndex" value="0" min="0">
+        <span id="tHqrName" class="small"></span>
+      </div>
+      <button id="convHqr" disabled>Write new HQR</button>
+      <div class="note">Converted models keep the bones of the source model. The animations of the target game only fit when the skeletons match: the same bones in the same order with the same parents (compare "bone parents" above). LBA1 and LBA2 Twinsen, for example, differ in proportions and some LBA2 hero bodies have extra bones. The new HQR is a download with the entry stored uncompressed; your original file is never changed.</div>
+      <div id="convOut" class="small"></div>
+    </section>
+  </div>
+</main>
+
+<script id="lba-core">
+// Core: HQR, bodies, conversion and export - no browser or three.js dependencies (also runs headless)
+(function (global) {
+'use strict';
+
+class FormatError extends Error {
+  constructor(message) { super(message); this.name = 'FormatError'; }
+}
+
+const FORMAT_NAMES = { lba1: 'LBA1', lba2: 'LBA2', demo: 'LBA2 demo' };
+
+// LBA1 materials (renderer/renderer.h)
+const MAT = { TRISTE: 0, PIERRE: 1, COPPER: 2, BOPPER: 3, MARBRE: 4, TRANS: 5, TRAME: 6, FLAT: 7, GRANIT: 8, GOURAUD: 9, DITHER: 10 };
+const MAT_NAMES = ['solid', 'pierre', 'copper', 'bopper', 'marbre', 'transparent', 'trame', 'flat', 'granit', 'gouraud', 'dither'];
+
+function toU8(x) {
+  if (x instanceof Uint8Array) return x;
+  if (x instanceof ArrayBuffer) return new Uint8Array(x);
+  if (ArrayBuffer.isView(x)) return new Uint8Array(x.buffer, x.byteOffset, x.byteLength);
+  throw new TypeError('expected binary data');
+}
+
+class Bin {
+  constructor(data) {
+    this.u8 = toU8(data);
+    this.dv = new DataView(this.u8.buffer, this.u8.byteOffset, this.u8.byteLength);
+    this.p = 0;
+  }
+  get length() { return this.u8.length; }
+  need(o, n) { if (o < 0 || o + n > this.u8.length) throw new FormatError('the data ends early (offset ' + o + ' of ' + this.u8.length + ')'); }
+  u8at(o) { this.need(o, 1); return this.u8[o]; }
+  u16at(o) { this.need(o, 2); return this.dv.getUint16(o, true); }
+  s16at(o) { this.need(o, 2); return this.dv.getInt16(o, true); }
+  u32at(o) { this.need(o, 4); return this.dv.getUint32(o, true); }
+  s32at(o) { this.need(o, 4); return this.dv.getInt32(o, true); }
+  byte() { const v = this.u8at(this.p); this.p += 1; return v; }
+  u16() { const v = this.u16at(this.p); this.p += 2; return v; }
+  s16() { const v = this.s16at(this.p); this.p += 2; return v; }
+  u32() { const v = this.u32at(this.p); this.p += 4; return v; }
+  s32() { const v = this.s32at(this.p); this.p += 4; return v; }
+  skip(n) { this.need(this.p, n); this.p += n; }
+}
+
+class Writer {
+  constructor() { this.buf = new Uint8Array(4096); this.dv = new DataView(this.buf.buffer); this.p = 0; }
+  ensure(n) {
+    if (this.p + n <= this.buf.length) return;
+    let size = this.buf.length * 2;
+    while (size < this.p + n) size *= 2;
+    const b = new Uint8Array(size); b.set(this.buf); this.buf = b; this.dv = new DataView(b.buffer);
+  }
+  u8(v) { this.ensure(1); this.buf[this.p++] = v & 255; }
+  u16(v) {
+    if (!(v >= 0 && v <= 0xFFFF)) throw new FormatError('value ' + v + ' does not fit in an unsigned 16-bit field');
+    this.ensure(2); this.dv.setUint16(this.p, v, true); this.p += 2;
+  }
+  s16(v) {
+    if (!(v >= -32768 && v <= 32767)) throw new FormatError('value ' + v + ' does not fit in a 16-bit field');
+    this.ensure(2); this.dv.setInt16(this.p, v, true); this.p += 2;
+  }
+  u32(v) { this.ensure(4); this.dv.setUint32(this.p, v >>> 0, true); this.p += 4; }
+  s32(v) { this.ensure(4); this.dv.setInt32(this.p, v | 0, true); this.p += 4; }
+  f32(v) { this.ensure(4); this.dv.setFloat32(this.p, v, true); this.p += 4; }
+  bytes(b) { this.ensure(b.length); this.buf.set(b, this.p); this.p += b.length; }
+  zeros(n) { this.ensure(n); this.buf.fill(0, this.p, this.p + n); this.p += n; }
+  align(a, v) { while (this.p % a) this.u8(v || 0); }
+  setU16(o, v) { this.dv.setUint16(o, v & 0xFFFF, true); }
+  setU32(o, v) { this.dv.setUint32(o, v >>> 0, true); }
+  setS32(o, v) { this.dv.setInt32(o, v | 0, true); }
+  result() { return this.buf.slice(0, this.p); }
+}
+
+// ---------------------------------------------------------------------------------------------
+// HQR
+
+function lzDecompress(src, realSize, mode) {
+  const dst = new Uint8Array(realSize);
+  let s = 0, d = 0;
+  while (d < realSize) {
+    if (s >= src.length) throw new FormatError('compressed entry ends early');
+    const flags = src[s++];
+    for (let bit = 0; bit < 8 && d < realSize; bit++) {
+      if (flags & (1 << bit)) {
+        if (s >= src.length) throw new FormatError('compressed entry ends early');
+        dst[d++] = src[s++];
+      } else {
+        if (s + 1 >= src.length) throw new FormatError('compressed entry ends early');
+        const w = src[s] | (src[s + 1] << 8);
+        s += 2;
+        const length = (w & 0x0F) + mode + 1;
+        let from = d - (w >> 4) - 1;
+        if (from < 0) throw new FormatError('compressed entry refers before its start');
+        for (let k = 0; k < length && d < realSize; k++) dst[d++] = dst[from++];
+      }
+    }
+  }
+  return dst;
+}
+
+function readHQR(data) {
+  const u8 = toU8(data);
+  const name = 'This file is not an HQR archive';
+  if (u8.length < 8) throw new FormatError(name + ' (too small).');
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const headerSize = dv.getUint32(0, true);
+  if (headerSize < 4 || headerSize % 4 || headerSize > u8.length) throw new FormatError(name + ' (no valid offset table).');
+  const slots = headerSize / 4;
+  const offsets = [];
+  for (let i = 0; i < slots; i++) offsets.push(dv.getUint32(i * 4, true));
+  let count = slots, endMarker = false;
+  if (offsets[slots - 1] === u8.length) { count = slots - 1; endMarker = true; }
+  let valid = 0, bad = 0;
+  for (let i = 0; i < count; i++) {
+    const o = offsets[i];
+    if (o === 0) continue;
+    if (o < headerSize || o + 10 > u8.length) { bad++; continue; }
+    const real = dv.getUint32(o, true), comp = dv.getUint32(o + 4, true), mode = dv.getUint16(o + 8, true);
+    if (mode > 2 || o + 10 + (mode === 0 ? real : comp) > u8.length) bad++; else valid++;
+  }
+  if (valid === 0 || bad > count / 4) throw new FormatError(name + ' (its offset table does not point at entries).');
+  const hqr = {
+    u8, count, offsets, endMarker, headerSize,
+    info(i) {
+      const o = offsets[i];
+      if (i < 0 || i >= count || !o || o + 10 > u8.length) return null;
+      return { offset: o, realSize: dv.getUint32(o, true), compSize: dv.getUint32(o + 4, true), mode: dv.getUint16(o + 8, true) };
+    },
+    getEntry(i) {
+      const e = hqr.info(i);
+      if (!e) return null;
+      const start = e.offset + 10;
+      if (e.mode === 0) {
+        if (start + e.realSize > u8.length) throw new FormatError('entry ' + i + ' ends after the end of the file');
+        return u8.slice(start, start + e.realSize);
+      }
+      if (e.mode === 1 || e.mode === 2) {
+        if (start + e.compSize > u8.length) throw new FormatError('entry ' + i + ' ends after the end of the file');
+        return lzDecompress(u8.subarray(start, start + e.compSize), e.realSize, e.mode);
+      }
+      throw new FormatError('entry ' + i + ' has an unknown compression mode ' + e.mode);
+    },
+  };
+  return hqr;
+}
+
+// A new HQR: a copy of the given one with entry `index` replaced by `data` (stored uncompressed,
+// mode 0). The other entries are copied byte for byte (with any hidden entries behind them);
+// entries that share an offset keep sharing it. index == count appends an entry.
+function hqrReplace(hqr, index, data) {
+  data = toU8(data);
+  if (!(index >= 0 && index <= hqr.count)) throw new FormatError('entry ' + index + ' is outside the HQR (0..' + hqr.count + ')');
+  const u8 = hqr.u8;
+  const n = Math.max(hqr.count, index + 1);
+  const slots = n + (hqr.endMarker || index === hqr.count ? 1 : 0);
+  const sorted = Array.from(new Set(hqr.offsets.filter(o => o > 0 && o < u8.length))).sort((a, b) => a - b);
+  const blockEnd = o => { for (const s of sorted) if (s > o) return s; return u8.length; };
+  const w = new Writer();
+  w.zeros(slots * 4);
+  const placed = new Map();
+  for (let i = 0; i < n; i++) {
+    let off = 0;
+    if (i === index) {
+      off = w.p;
+      w.u32(data.length); w.u32(data.length); w.u16(0); w.bytes(data);
+    } else if (i < hqr.count && hqr.offsets[i] > 0 && hqr.offsets[i] < u8.length) {
+      const o = hqr.offsets[i];
+      if (placed.has(o)) off = placed.get(o);
+      else { off = w.p; w.bytes(u8.subarray(o, blockEnd(o))); placed.set(o, off); }
+    }
+    w.setU32(i * 4, off);
+  }
+  if (slots > n) w.setU32(n * 4, w.p);
+  return w.result();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bodies - one model for the three formats:
+// verts [x, y, z] relative to the base point of their bone, vbone; bones {parent (-1 = root), base
+// (point of the parent bone), first, count, nNormals}; normals [x, y, z, w] in the source scale and
+// normalBone; polys {mat (LBA1 material), src (material / render type of the source), verts,
+// colour (16 bits as stored), normals (an index per point, -1 = none), textured}; lines {a, b,
+// colour, pre, extra}; spheres {v, radius, colour, fill}
+
+function newBody(format) {
+  return { format, flags: 0, animated: false, verts: [], vbone: [], bones: [], normals: [], normalBone: [], polys: [], lines: [], spheres: [], textures: 0, trailing: 0, pointNormals: false };
+}
+
+function readVerts(r, b) {
+  const n = r.u16();
+  r.need(r.p, 6 * n);
+  for (let i = 0; i < n; i++) { b.verts.push([r.s16(), r.s16(), r.s16()]); b.vbone.push(0); }
+}
+
+function readNormals(r, b) {
+  const n = r.u16();
+  r.need(r.p, 8 * n);
+  for (let i = 0; i < n; i++) b.normals.push([r.s16(), r.s16(), r.s16(), r.u16()]);
+}
+
+function assignBones(b) {
+  for (let i = 0; i < b.bones.length; i++) {
+    const bone = b.bones[i];
+    for (let j = 0; j < bone.count; j++) b.vbone[bone.first + j] = i;
+  }
+  // the normals of a bone follow each other in bone order
+  let k = 0;
+  b.normalBone = new Array(b.normals.length).fill(Math.max(0, b.bones.length - 1));
+  for (let i = 0; i < b.bones.length; i++) {
+    for (let j = 0; j < b.bones[i].nNormals && k < b.normals.length; j++) b.normalBone[k++] = i;
+  }
+}
+
+function checkBone(b, i, bone) {
+  const nv = b.verts.length;
+  if (bone.first < 0 || bone.count < 0 || bone.first + bone.count > nv) throw new FormatError('bone ' + i + ' points outside the vertices');
+  if (bone.parent !== -1 && (bone.parent < 0 || bone.parent >= i)) throw new FormatError('bone ' + i + ' has an invalid parent');
+  if (bone.parent !== -1 && (bone.base < 0 || bone.base >= nv)) throw new FormatError('bone ' + i + ' has an invalid base point');
+}
+
+function readPointIndex(r, nv, what) {
+  const raw = r.u16();
+  if (raw % 6 || raw / 6 >= nv) throw new FormatError(what + ' refers to a vertex that does not exist');
+  return raw / 6;
+}
+
+function readLba1LinesSpheres(r, b) {
+  const nv = b.verts.length;
+  const nl = r.u16();
+  for (let i = 0; i < nl; i++) {
+    const pre = r.byte(), colour = r.byte(), extra = r.u16();
+    const a = readPointIndex(r, nv, 'line ' + i), c = readPointIndex(r, nv, 'line ' + i);
+    b.lines.push({ a, b: c, colour, pre, extra });
+  }
+  const ns = r.u16();
+  for (let i = 0; i < ns; i++) {
+    const fill = r.byte(), colour = r.u16();
+    r.byte();
+    const radius = r.u16();
+    const v = readPointIndex(r, nv, 'sphere ' + i);
+    b.spheres.push({ v, radius, colour, fill });
+  }
+}
+
+function parseLBA1(data) {
+  const r = new Bin(data);
+  const b = newBody('lba1');
+  if (r.length < 0x1A + 8) throw new FormatError('too small for an LBA1 body');
+  b.flags = r.u16at(0);
+  b.animated = (b.flags & 2) !== 0;
+  r.p = 0x1A;
+  readVerts(r, b);
+  const nb = r.u16();
+  if (nb === 0) throw new FormatError('an LBA1 body without bones');
+  for (let i = 0; i < nb; i++) {
+    const o = r.p;
+    r.need(o, 38);
+    const first = r.s16(), count = r.s16(), base = r.s16(), parentOff = r.s16();
+    const type = r.s16(), x = r.s16(), y = r.s16(), z = r.s16();
+    r.s16();
+    const nNormals = r.s16();
+    r.p = o + 38;
+    if (first % 6 || base % 6 || (parentOff !== -1 && parentOff % 38)) throw new FormatError('bone ' + i + ' is not an LBA1 bone');
+    const bone = { parent: parentOff === -1 ? -1 : parentOff / 38, base: base / 6, first: first / 6, count, nNormals: Math.max(0, nNormals), state: { type, x, y, z } };
+    checkBone(b, i, bone);
+    b.bones.push(bone);
+  }
+  readNormals(r, b);
+  const nn = b.normals.length;
+  const np = r.u16();
+  for (let i = 0; i < np; i++) {
+    const mat = r.byte(), n = r.byte(), colour = r.u16();
+    if (mat > MAT.DITHER) throw new FormatError('polygon ' + i + ' has an unknown LBA1 material ' + mat);
+    if (n < 2) throw new FormatError('polygon ' + i + ' has ' + n + ' points');
+    let normal = -1;
+    if (mat === MAT.FLAT || mat === MAT.GRANIT) normal = r.s16();
+    const verts = [], normals = [];
+    for (let k = 0; k < n; k++) {
+      if (mat >= MAT.GOURAUD) normal = r.s16();
+      verts.push(readPointIndex(r, b.verts.length, 'polygon ' + i));
+      normals.push(normal >= 0 && normal < nn ? normal : -1);
+    }
+    b.polys.push({ mat, src: mat, verts, colour, normals, textured: false });
+  }
+  readLba1LinesSpheres(r, b);
+  b.trailing = r.length - r.p;
+  assignBones(b);
+  return b;
+}
+
+// demo materials with one normal for the polygon (parser/body.cpp lba2DemoSingleNormal)
+function demoSingleNormal(m) { return m === 7 || m === 8 || m === 12 || m === 16 || m === 20 || m === 24 || m === 30 || m === 34; }
+
+function parseDemo(data) {
+  const r = new Bin(data);
+  const b = newBody('demo');
+  if (r.length < 24) throw new FormatError('too small for a body of the LBA2 demo');
+  b.flags = r.u16at(0);
+  b.animated = (b.flags & 2) !== 0;
+  const off = r.s16at(14);
+  if (off < 0 || 16 + off >= r.length) throw new FormatError('invalid header');
+  r.p = 16 + off;
+  readVerts(r, b);
+  const nv = b.verts.length;
+  if (b.animated) {
+    const nb = r.u16();
+    let first = 0;
+    for (let i = 0; i < nb; i++) {
+      const count = r.u16(), base = r.s16(), parentOff = r.s16(), nNormals = r.u16();
+      if (base % 6 || (parentOff >= 0 && parentOff % 36)) throw new FormatError('bone ' + i + ' is not a demo bone');
+      const bone = { parent: parentOff < 0 ? -1 : parentOff / 36, base: base / 6, first, count, nNormals, state: { type: 0, x: 0, y: 0, z: 0 } };
+      checkBone(b, i, bone);
+      b.bones.push(bone);
+      first += count;
+    }
+    if (first !== nv) throw new FormatError('the bones do not hold all vertices');
+  }
+  readNormals(r, b);
+  if (!b.animated) b.bones.push({ parent: -1, base: 0, first: 0, count: nv, nNormals: b.normals.length, state: { type: 0, x: 0, y: 0, z: 0 } });
+  const nn = b.normals.length;
+  const np = r.u16();
+  for (let i = 0; i < np; i++) {
+    const m = r.byte(), n = r.byte(), colour = r.u16();
+    if (m > 40) throw new FormatError('polygon ' + i + ' has an unknown demo material ' + m);
+    if (n < 2) throw new FormatError('polygon ' + i + ' has ' + n + ' points');
+    const single = demoSingleNormal(m);
+    let normal = -1;
+    if (single) normal = r.s16();
+    const verts = [], normals = [];
+    for (let k = 0; k < n; k++) {
+      if (m >= MAT.GOURAUD) { const v = r.s16(); if (!single) normal = v; }
+      verts.push(readPointIndex(r, nv, 'polygon ' + i));
+      normals.push(normal >= 0 && normal < nn ? normal : -1);
+    }
+    let textured = false;
+    if (m > MAT.DITHER && m !== 27 && m !== 28) {
+      r.skip(4 + 4 * n);
+      textured = m <= 26;
+    }
+    const mat = m <= MAT.DITHER ? m : (single ? MAT.FLAT : MAT.GOURAUD);
+    b.polys.push({ mat, src: m, verts, colour, normals, textured });
+  }
+  readLba1LinesSpheres(r, b);
+  b.trailing = r.length - r.p;
+  assignBones(b);
+  return b;
+}
+
+// LBA2 render types -> LBA1 materials (parser/body.cpp lba2MaterialType)
+function lba2Material(t) {
+  switch (t) {
+    case 0: case 8: return MAT.TRISTE;
+    case 1: case 9: return MAT.FLAT;
+    case 2: return MAT.TRANS;
+    case 3: return MAT.TRAME;
+    case 5: case 7: case 11: return MAT.DITHER;
+    default: return MAT.GOURAUD;
+  }
+}
+
+function parseLBA2(data) {
+  const r = new Bin(data);
+  const b = newBody('lba2');
+  if (r.length < 96) throw new FormatError('too small for an LBA2 body');
+  b.flags = r.u32at(0);
+  b.animated = (b.flags & 0x100) !== 0;
+  if (r.s16at(4) !== 96) throw new FormatError('not an LBA2 body header');
+  const t = [];
+  for (let i = 0; i < 16; i++) t.push(r.s32at(32 + 4 * i));
+  const [ng, og, npt, op, nn, on, nf, of, npoly, opoly, nl, ol, ns, os, nt, ot] = t;
+  for (let i = 0; i < 16; i += 2) {
+    if (t[i] < 0 || t[i] > 65535 || t[i + 1] < 0 || t[i + 1] > r.length) throw new FormatError('not an LBA2 body (offset table)');
+  }
+  r.need(op, 8 * npt);
+  for (let i = 0; i < npt; i++) { b.verts.push([r.s16at(op + 8 * i), r.s16at(op + 8 * i + 2), r.s16at(op + 8 * i + 4)]); b.vbone.push(0); }
+  r.need(og, 8 * ng);
+  let first = 0;
+  const faceCounts = [];
+  for (let i = 0; i < ng; i++) {
+    const q = og + 8 * i;
+    const parent = r.u16at(q), base = r.u16at(q + 2), count = r.u16at(q + 4), nNorm = r.u16at(q + 6);
+    const bone = { parent: i === 0 ? -1 : parent, base: i === 0 ? 0 : base, first, count, nNormals: count, state: { type: 0, x: 0, y: 0, z: 0 } };
+    checkBone(b, i, bone);
+    b.bones.push(bone);
+    faceCounts.push(nNorm);
+    first += count;
+  }
+  if (ng === 0) b.bones.push({ parent: -1, base: 0, first: 0, count: npt, nNormals: npt, state: { type: 0, x: 0, y: 0, z: 0 } });
+  for (let i = 0; i < b.bones.length; i++) { const bone = b.bones[i]; for (let j = 0; j < bone.count; j++) b.vbone[bone.first + j] = i; }
+  // the point normals (one per point), then the face normals (per bone)
+  r.need(on, 8 * nn);
+  for (let i = 0; i < nn; i++) b.normals.push([r.s16at(on + 8 * i), r.s16at(on + 8 * i + 2), r.s16at(on + 8 * i + 4), r.s16at(on + 8 * i + 6)]);
+  r.need(of, 8 * nf);
+  for (let i = 0; i < nf; i++) b.normals.push([r.s16at(of + 8 * i), r.s16at(of + 8 * i + 2), r.s16at(of + 8 * i + 4), r.s16at(of + 8 * i + 6)]);
+  b.normalBone = [];
+  for (let i = 0; i < nn; i++) b.normalBone.push(i < npt ? b.vbone[i] : 0);
+  for (let g = 0; g < faceCounts.length; g++) for (let j = 0; j < faceCounts[g]; j++) b.normalBone.push(g);
+  while (b.normalBone.length < b.normals.length) b.normalBone.push(0);
+  b.pointNormals = nn === npt;
+  b.faceNormalStart = nn;
+  // polygons: blocks of one render type
+  let p = opoly;
+  while (b.polys.length < npoly && p < ol) {
+    const type = r.u16at(p), num = r.u16at(p + 2), size = r.u16at(p + 4);
+    if (num === 0 || size <= 8) break;
+    const psize = Math.floor((size - 8) / num);
+    const nvp = (type & 0x8000) ? 4 : 3;
+    const tt = type & 0xFF;
+    const textured = tt >= 8 && tt <= 11 && psize >= 12 + nvp * 4 + (nvp === 4 ? 2 : 0);
+    const mat = lba2Material(tt);
+    r.need(p, size);
+    for (let i = 0; i < num; i++) {
+      const q = p + 8 + i * psize;
+      const v = [r.u16at(q), r.u16at(q + 2), r.u16at(q + 4), r.u16at(q + 6)].slice(0, nvp);
+      for (const x of v) if (x >= npt) throw new FormatError('a polygon refers to a vertex that does not exist');
+      const colour = r.u16at(q + 8);
+      let normal = r.u16at(q + 10);
+      if (normal >= b.normals.length) normal = v[0];
+      const normals = v.map(x => mat >= MAT.GOURAUD ? (x < nn ? x : -1) : normal);
+      b.polys.push({ mat, src: type, verts: v, colour, normals, textured });
+    }
+    p += size;
+  }
+  if (b.polys.length !== npoly) throw new FormatError('the polygon blocks do not hold all polygons');
+  r.need(ol, 8 * nl);
+  for (let i = 0; i < nl; i++) {
+    const q = ol + 8 * i;
+    const a = r.u16at(q + 4), c = r.u16at(q + 6);
+    if (a >= npt || c >= npt) throw new FormatError('a line refers to a vertex that does not exist');
+    b.lines.push({ a, b: c, colour: r.u16at(q + 2), pre: 0, extra: r.u16at(q) });
+  }
+  r.need(os, 8 * ns);
+  for (let i = 0; i < ns; i++) {
+    const q = os + 8 * i;
+    const v = r.u16at(q + 4);
+    if (v >= npt) throw new FormatError('a sphere refers to a vertex that does not exist');
+    b.spheres.push({ fill: r.u16at(q), colour: r.u16at(q + 2), v, radius: r.u16at(q + 6) });
+  }
+  b.textures = nt;
+  return b;
+}
+
+const PARSERS = { lba1: parseLBA1, lba2: parseLBA2, demo: parseDemo };
+
+function parseBody(data, format) {
+  const f = PARSERS[format];
+  if (!f) throw new FormatError('unknown format ' + format);
+  return f(toU8(data));
+}
+
+// which formats a body parses in: 2 = parses and ends where the format ends, 1 = parses, 0 = no
+function scoreBody(data) {
+  const scores = {};
+  for (const f of ['lba2', 'lba1', 'demo']) {
+    try {
+      const b = parseBody(data, f);
+      scores[f] = f === 'lba2' || (b.trailing >= 0 && b.trailing <= 4) ? 2 : 1;
+    } catch (e) { scores[f] = 0; }
+  }
+  return scores;
+}
+
+function detectBodyFormat(data) {
+  const s = scoreBody(data);
+  let best = null;
+  for (const f of ['lba2', 'lba1', 'demo']) if (s[f] > 0 && (best === null || s[f] > s[best])) best = f;
+  return best;
+}
+
+// the format of an HQR full of bodies: the best total score over (up to) 40 entries
+function detectHQRFormat(hqr) {
+  const total = { lba1: 0, lba2: 0, demo: 0 };
+  let tried = 0;
+  for (let i = 0; i < hqr.count && tried < 40; i++) {
+    let e;
+    try { e = hqr.getEntry(i); } catch (err) { continue; }
+    if (!e || e.length < 16) continue;
+    tried++;
+    const s = scoreBody(e);
+    for (const f in total) total[f] += s[f];
+  }
+  let best = null;
+  for (const f of ['lba2', 'lba1', 'demo']) if (total[f] > 0 && (best === null || total[f] > total[best])) best = f;
+  return { format: best, scores: total, tried };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Geometry
+
+function absPoints(b) {
+  const out = b.verts.map(v => v.slice());
+  for (const bone of b.bones) {
+    if (bone.parent < 0) continue;
+    const base = out[bone.base];
+    if (!base) continue;
+    for (let i = bone.first; i < bone.first + bone.count; i++) {
+      out[i] = [b.verts[i][0] + base[0], b.verts[i][1] + base[1], b.verts[i][2] + base[2]];
+    }
+  }
+  return out;
+}
+
+// the joint of a bone: its base point (a point of the parent bone); the roots are at the origin
+function jointPositions(b, abs) {
+  return b.bones.map(bone => (bone.parent < 0 || !abs[bone.base]) ? [0, 0, 0] : abs[bone.base].slice());
+}
+
+function normalize(v) {
+  const l = Math.hypot(v[0], v[1], v[2]);
+  return l > 1e-9 ? [v[0] / l, v[1] / l, v[2] / l] : [0, 0, 0];
+}
+
+// Newell's normal of a polygon (counter-clockwise seen from the front, like the game data)
+function newell(abs, verts) {
+  let x = 0, y = 0, z = 0;
+  for (let i = 0; i < verts.length; i++) {
+    const a = abs[verts[i]], c = abs[verts[(i + 1) % verts.length]];
+    x += (a[1] - c[1]) * (a[2] + c[2]);
+    y += (a[2] - c[2]) * (a[0] + c[0]);
+    z += (a[0] - c[0]) * (a[1] + c[1]);
+  }
+  return [x, y, z];
+}
+
+function faceNormal(abs, verts) {
+  const n = normalize(newell(abs, verts));
+  return (n[0] || n[1] || n[2]) ? n : [0, 1, 0];
+}
+
+// per vertex: the average of the normals of the polygons around it (area weighted)
+function geometricVertexNormals(b, abs) {
+  const acc = b.verts.map(() => [0, 0, 0]);
+  for (const p of b.polys) {
+    if (p.verts.length < 3) continue;
+    const n = newell(abs, p.verts);
+    for (const v of p.verts) { acc[v][0] += n[0]; acc[v][1] += n[1]; acc[v][2] += n[2]; }
+  }
+  return acc.map(normalize);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Palettes and colours
+
+function readPalette(data) {
+  const u8 = toU8(data);
+  if (u8.length < 768) throw new FormatError('a palette needs 768 bytes, this entry has ' + u8.length);
+  const pal = u8.slice(0, 768);
+  let max = 0;
+  for (const v of pal) max = Math.max(max, v);
+  if (max <= 63) for (let i = 0; i < 768; i++) pal[i] = pal[i] * 4 + (pal[i] >> 4); // 6-bit VGA palette
+  return pal;
+}
+
+// a palette from a RESS.HQR (entry index) or a raw 768-byte palette file
+function paletteFromFile(data, index) {
+  const u8 = toU8(data);
+  let hqr = null;
+  try { hqr = readHQR(u8); } catch (e) { hqr = null; }
+  if (hqr) {
+    if (!(index >= 0 && index < hqr.count)) throw new FormatError('the HQR has no entry ' + index + ' (0..' + (hqr.count - 1) + ')');
+    const e = hqr.getEntry(index);
+    if (!e) throw new FormatError('entry ' + index + ' of the HQR is empty');
+    return readPalette(e);
+  }
+  if (u8.length === 768) return readPalette(u8);
+  throw new FormatError('This file is neither an HQR nor a 768-byte palette.');
+}
+
+function greyPalette() {
+  const p = new Uint8Array(768);
+  for (let i = 0; i < 256; i++) { const g = 40 + Math.round((i & 15) * 13); p[3 * i] = p[3 * i + 1] = p[3 * i + 2] = g; }
+  return p;
+}
+
+function rgb(pal, i) { i &= 255; return [pal[3 * i], pal[3 * i + 1], pal[3 * i + 2]]; }
+
+const LIGHT = normalize([-0.45, 0.8, 0.55]);
+
+function shadeIndex(colour, n) {
+  const lam = Math.max(0, n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2]);
+  return Math.max(0, Math.min(15, Math.round(1 + 14 * lam)));
+}
+
+// the colour index of a polygon point: the shaded materials move within their ramp of 16
+function colourIndex(colour, mat, n, bake) {
+  const c = colour & 255;
+  if (mat < MAT.FLAT) return c;
+  const shade = bake ? shadeIndex(c, n) : 8;
+  return Math.min(c + shade, c | 15);
+}
+
+function colourDistance(a, i, b, j) {
+  const dr = a[3 * i] - b[3 * j], dg = a[3 * i + 1] - b[3 * j + 1], db = a[3 * i + 2] - b[3 * j + 2];
+  return dr * dr + dg * dg + db * db;
+}
+
+// resources/lba2models.cpp mapPalette: shaded colours by ramp, the others by nearest colour
+function makeColourMaps(src, dst) {
+  const rampMap = new Uint8Array(16), colorMap = new Uint8Array(256);
+  for (let sr = 0; sr < 16; sr++) {
+    let best = Infinity;
+    for (let dr = 0; dr < 16; dr++) {
+      let d = 0;
+      for (let s = 0; s < 16; s++) d += colourDistance(dst, dr * 16 + s, src, sr * 16 + s);
+      if (d < best) { best = d; rampMap[sr] = dr; }
+    }
+  }
+  for (let sc = 0; sc < 256; sc++) {
+    let best = Infinity;
+    for (let dc = 32; dc < 256; dc++) {
+      const d = colourDistance(dst, dc, src, sc);
+      if (d < best) { best = d; colorMap[sc] = dc; }
+    }
+  }
+  return { rampMap, colorMap };
+}
+
+function samePalette(a, b) {
+  if (!a || !b) return false;
+  for (let i = 0; i < 768; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function cloneBody(b) { return JSON.parse(JSON.stringify(b)); }
+
+function remapColours(b, maps) {
+  for (const p of b.polys) {
+    if (p.mat >= MAT.FLAT) p.colour = (p.colour & ~0xF0) | (maps.rampMap[(p.colour >> 4) & 15] << 4);
+    else p.colour = (p.colour & ~0xFF) | maps.colorMap[p.colour & 255];
+  }
+  for (const s of b.spheres) s.colour = (s.colour & ~0xFF) | maps.colorMap[s.colour & 255];
+  for (const l of b.lines) l.colour = (l.colour & ~0xFF) | maps.colorMap[l.colour & 255];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Writers
+
+function bbox(abs) {
+  const mn = [0, 0, 0], mx = [0, 0, 0];
+  abs.forEach((p, i) => { for (let k = 0; k < 3; k++) { if (i === 0 || p[k] < mn[k]) mn[k] = p[k]; if (i === 0 || p[k] > mx[k]) mx[k] = p[k]; } });
+  return { mn, mx };
+}
+
+const clamp16 = v => Math.max(-32768, Math.min(32767, Math.round(v)));
+
+function checkContiguous(b, target) {
+  let first = 0;
+  for (let i = 0; i < b.bones.length; i++) {
+    if (b.bones[i].first !== first) throw new FormatError('the vertices of the bones are not in bone order - cannot write a ' + FORMAT_NAMES[target] + ' body');
+    first += b.bones[i].count;
+  }
+  if (first !== b.verts.length) throw new FormatError('not all vertices belong to a bone - cannot write a ' + FORMAT_NAMES[target] + ' body');
+}
+
+// LBA1 / demo normals: grouped by bone. Polygons without a usable normal get a new one (the face
+// normal for flat polygons, the vertex normal for gouraud ones).
+function lba1Normals(b, abs) {
+  const geo = geometricVertexNormals(b, abs);
+  const entries = b.normals.map((n, i) => ({ bone: b.normalBone[i] || 0, vec: normalize(n), key: 'n' + i }));
+  const extra = new Map();
+  const polyRefs = b.polys.map((p, pi) => p.verts.map((v, k) => {
+    if (p.mat < MAT.FLAT) return null;
+    const ref = p.normals[k];
+    if (ref >= 0 && ref < b.normals.length && (b.normals[ref][0] || b.normals[ref][1] || b.normals[ref][2])) return 'n' + ref;
+    const key = p.mat >= MAT.GOURAUD ? 'v' + v : 'f' + pi;
+    if (!extra.has(key)) {
+      const vec = p.mat >= MAT.GOURAUD ? geo[v] : faceNormal(abs, p.verts);
+      extra.set(key, { bone: b.vbone[p.mat >= MAT.GOURAUD ? v : p.verts[0]], vec, key });
+    }
+    return key;
+  }));
+  const all = entries.concat(Array.from(extra.values()));
+  all.forEach((e, i) => { e.order = i; });
+  all.sort((x, y) => x.bone - y.bone || x.order - y.order);
+  const index = new Map();
+  all.forEach((e, i) => index.set(e.key, i));
+  const perBone = b.bones.map(() => 0);
+  for (const e of all) perBone[Math.min(e.bone, perBone.length - 1)]++;
+  return { list: all.map(e => e.vec), perBone, polyNormals: polyRefs.map(refs => refs.map(k => k === null ? -1 : index.get(k))) };
+}
+
+function writeLba1Normal(w, vec) {
+  const x = Math.round(vec[0] * 64), y = Math.round(vec[1] * 64), z = Math.round(vec[2] * 64);
+  w.s16(x); w.s16(y); w.s16(z);
+  w.u16(Math.max(1, Math.round(4.05 * Math.hypot(x, y, z))));
+}
+
+function writeLba1Polys(w, b, pn, nv) {
+  w.u16(b.polys.length);
+  b.polys.forEach((p, pi) => {
+    const mat = Math.max(0, Math.min(MAT.DITHER, p.mat));
+    if (p.verts.length > 255) throw new FormatError('a polygon has more than 255 points');
+    w.u8(mat); w.u8(p.verts.length); w.u16(p.colour & 0xFFFF);
+    const ns = pn[pi];
+    if (mat === MAT.FLAT || mat === MAT.GRANIT) w.s16(Math.max(0, ns[0]));
+    p.verts.forEach((v, k) => {
+      if (mat >= MAT.GOURAUD) w.s16(Math.max(0, ns[k]));
+      w.u16(v * 6);
+    });
+  });
+}
+
+function writeLba1LinesSpheres(w, b) {
+  w.u16(b.lines.length);
+  for (const l of b.lines) { w.u8(l.pre || 0); w.u8(l.colour & 255); w.u16(b.format === 'lba2' ? 0 : (l.extra || 0) & 0xFFFF); w.u16(l.a * 6); w.u16(l.b * 6); }
+  w.u16(b.spheres.length);
+  for (const s of b.spheres) { w.u8(s.fill & 255); w.u16(s.colour & 0xFFFF); w.u8(0); w.u16(Math.min(65535, s.radius)); w.u16(s.v * 6); }
+}
+
+function writeLBA1(b) {
+  const nv = b.verts.length;
+  if (nv * 6 > 65535) throw new FormatError('too many vertices for LBA1 (' + nv + ', at most 10922)');
+  const abs = absPoints(b);
+  const bb = bbox(abs);
+  const nm = lba1Normals(b, abs);
+  const w = new Writer();
+  w.u16(b.bones.length > 1 ? 3 : 1);
+  for (let k = 0; k < 3; k++) { w.s16(clamp16(bb.mn[k])); w.s16(clamp16(bb.mx[k])); }
+  w.s16(10);
+  w.zeros(10);
+  w.u16(nv);
+  for (const v of b.verts) { w.s16(clamp16(v[0])); w.s16(clamp16(v[1])); w.s16(clamp16(v[2])); }
+  w.u16(b.bones.length);
+  b.bones.forEach((bone, i) => {
+    w.s16(bone.first * 6); w.s16(bone.count); w.s16(bone.parent < 0 ? 0 : bone.base * 6); w.s16(bone.parent < 0 ? -1 : bone.parent * 38);
+    w.s16(0); w.s16(0); w.s16(0); w.s16(0); // type rotate, no rotation (the rest pose)
+    w.s16(0); w.s16(nm.perBone[i]); w.s16(0);
+    w.zeros(16);
+  });
+  w.u16(nm.list.length);
+  for (const n of nm.list) writeLba1Normal(w, n);
+  writeLba1Polys(w, b, nm.polyNormals, nv);
+  writeLba1LinesSpheres(w, b);
+  w.u16(0);
+  return w.result();
+}
+
+function writeDemo(b) {
+  checkContiguous(b, 'demo');
+  const nv = b.verts.length;
+  if (nv * 6 > 65535) throw new FormatError('too many vertices for the demo format (' + nv + ')');
+  const abs = absPoints(b);
+  const bb = bbox(abs);
+  const nm = lba1Normals(b, abs);
+  const w = new Writer();
+  w.u16(3);
+  for (let k = 0; k < 3; k++) { w.s16(clamp16(bb.mn[k])); w.s16(clamp16(bb.mx[k])); }
+  w.s16(0);
+  w.u16(nv);
+  for (const v of b.verts) { w.s16(clamp16(v[0])); w.s16(clamp16(v[1])); w.s16(clamp16(v[2])); }
+  w.u16(b.bones.length);
+  b.bones.forEach((bone, i) => {
+    w.u16(bone.count); w.s16(bone.parent < 0 ? 0 : bone.base * 6); w.s16(bone.parent < 0 ? -1 : bone.parent * 36); w.u16(nm.perBone[i]);
+  });
+  w.u16(nm.list.length);
+  for (const n of nm.list) writeLba1Normal(w, n);
+  writeLba1Polys(w, b, nm.polyNormals, nv);
+  writeLba1LinesSpheres(w, b);
+  return w.result();
+}
+
+// LBA1 material -> LBA2 render type
+function lba2Type(mat) {
+  if (mat <= MAT.MARBRE) return 0;
+  return { 5: 2, 6: 3, 7: 1, 8: 1, 9: 4, 10: 5 }[mat];
+}
+
+function writeLBA2(b) {
+  checkContiguous(b, 'lba2');
+  const npt = b.verts.length;
+  if (npt > 65535) throw new FormatError('too many vertices');
+  const abs = absPoints(b);
+  const bb = bbox(abs);
+  const geo = geometricVertexNormals(b, abs);
+  const usable = i => i >= 0 && i < b.normals.length && (b.normals[i][0] || b.normals[i][1] || b.normals[i][2]);
+  // point normals: one per point - the normals the gouraud polygons give the point, else the geometry
+  let pointNormals;
+  if (b.pointNormals) {
+    pointNormals = b.normals.slice(0, npt).map(n => [n[0], n[1], n[2], n[3]]);
+  } else {
+    const acc = b.verts.map(() => [0, 0, 0]);
+    for (const p of b.polys) {
+      if (p.mat < MAT.GOURAUD) continue;
+      p.verts.forEach((v, k) => { if (usable(p.normals[k])) { const n = normalize(b.normals[p.normals[k]]); acc[v][0] += n[0]; acc[v][1] += n[1]; acc[v][2] += n[2]; } });
+    }
+    pointNormals = acc.map((a, v) => {
+      let n = normalize(a);
+      if (!(n[0] || n[1] || n[2])) n = geo[v];
+      return [Math.round(n[0] * 16384), Math.round(n[1] * 16384), Math.round(n[2] * 16384), 0];
+    });
+  }
+  // face normals of the flat polygons, per bone
+  const faces = [];
+  const faceKey = new Map();
+  const polyNormal = b.polys.map((p, pi) => {
+    if (p.mat >= MAT.GOURAUD || p.mat < MAT.FLAT) return p.verts[0];
+    const ref = p.normals[0];
+    if (b.pointNormals && ref >= 0 && ref < npt) return ref;
+    const key = usable(ref) ? 'n' + ref : 'f' + pi;
+    if (!faceKey.has(key)) {
+      const vec = usable(ref) ? normalize(b.normals[ref]) : faceNormal(abs, p.verts);
+      const raw = usable(ref) && b.format === 'lba2' ? b.normals[ref] : [Math.round(vec[0] * 16384), Math.round(vec[1] * 16384), Math.round(vec[2] * 16384), 0];
+      const bone = usable(ref) ? (b.normalBone[ref] || 0) : b.vbone[p.verts[0]];
+      faceKey.set(key, faces.length);
+      faces.push({ bone, raw, order: faces.length, key });
+    }
+    return key;
+  });
+  faces.sort((x, y) => x.bone - y.bone || x.order - y.order);
+  const faceIndex = new Map();
+  faces.forEach((f, i) => faceIndex.set(f.key, i));
+  const facePerBone = b.bones.map(() => 0);
+  for (const f of faces) facePerBone[Math.min(f.bone, facePerBone.length - 1)]++;
+  // the polygons as triangles and quads, in blocks of one render type
+  const blocks = new Map();
+  b.polys.forEach((p, pi) => {
+    if (p.verts.length < 3) return;
+    const t = lba2Type(Math.max(0, Math.min(MAT.DITHER, p.mat)));
+    const pn = polyNormal[pi];
+    const normal = typeof pn === 'string' ? npt + faceIndex.get(pn) : pn;
+    const add = (verts) => {
+      const key = t | (verts.length === 4 ? 0x8000 : 0);
+      if (!blocks.has(key)) blocks.set(key, []);
+      blocks.get(key).push({ verts, colour: p.colour & 0xFFFF, normal: p.mat >= MAT.GOURAUD ? verts[0] : normal });
+    };
+    if (p.verts.length <= 4) add(p.verts.slice());
+    else for (let k = 1; k + 1 < p.verts.length; k++) add([p.verts[0], p.verts[k], p.verts[k + 1]]);
+  });
+  const w = new Writer();
+  w.u32(b.bones.length > 1 ? 0x110 : 0x10);
+  w.s16(96); w.s16(0);
+  for (let k = 0; k < 3; k++) { w.s32(Math.round(bb.mn[k])); w.s32(Math.round(bb.mx[k])); }
+  w.zeros(64);
+  const table = [];
+  // groups
+  table.push([b.bones.length, w.p]);
+  b.bones.forEach((bone, i) => { w.u16(bone.parent < 0 ? 0xFFFF : bone.parent); w.u16(bone.parent < 0 ? 0 : bone.base); w.u16(bone.count); w.u16(facePerBone[i]); });
+  table.push([npt, w.p]);
+  for (const v of b.verts) { w.s16(clamp16(v[0])); w.s16(clamp16(v[1])); w.s16(clamp16(v[2])); w.s16(0); }
+  table.push([npt, w.p]);
+  for (const n of pointNormals) { w.s16(clamp16(n[0])); w.s16(clamp16(n[1])); w.s16(clamp16(n[2])); w.s16(clamp16(n[3] || 0)); }
+  table.push([faces.length, w.p]);
+  for (const f of faces) { w.s16(clamp16(f.raw[0])); w.s16(clamp16(f.raw[1])); w.s16(clamp16(f.raw[2])); w.s16(clamp16(f.raw[3] || 0)); }
+  const polyStart = w.p;
+  let npoly = 0;
+  for (const key of Array.from(blocks.keys()).sort((x, y) => (x & 0xFF) - (y & 0xFF) || x - y)) {
+    const list = blocks.get(key);
+    for (let s = 0; s < list.length; s += 5000) {
+      const part = list.slice(s, s + 5000);
+      w.u16(key); w.u16(part.length); w.u16(8 + 12 * part.length); w.u16(0);
+      for (const q of part) {
+        for (let k = 0; k < 4; k++) w.u16(k < q.verts.length ? q.verts[k] : 0);
+        w.u16(q.colour); w.u16(q.normal);
+      }
+      npoly += part.length;
+    }
+  }
+  table.push([npoly, polyStart]);
+  table.push([b.lines.length, w.p]);
+  for (const l of b.lines) { w.u16(0); w.u16(l.colour & 0xFFFF); w.u16(l.a); w.u16(l.b); }
+  table.push([b.spheres.length, w.p]);
+  for (const s of b.spheres) { w.u16(s.fill & 0xFFFF); w.u16(s.colour & 0xFFFF); w.u16(s.v); w.u16(Math.min(65535, s.radius)); }
+  table.push([0, w.p]);
+  table.forEach(([n, o], i) => { w.setS32(32 + 8 * i, n); w.setS32(36 + 8 * i, o); });
+  return w.result();
+}
+
+const WRITERS = { lba1: writeLBA1, lba2: writeLBA2, demo: writeDemo };
+
+function summary(b) {
+  const mats = {};
+  for (const p of b.polys) mats[p.mat] = (mats[p.mat] || 0) + 1;
+  return {
+    format: b.format, vertices: b.verts.length, bones: b.bones.length, normals: b.normals.length,
+    polygons: b.polys.length, lines: b.lines.length, spheres: b.spheres.length,
+    textured: b.polys.filter(p => p.textured).length, parents: b.bones.map(x => x.parent), materials: mats,
+  };
+}
+
+// Convert a body to another game's format. opts: srcBytes (copied unchanged when the format
+// stays the same), srcPal and dstPal (colour mapping).
+function convertBody(b, target, opts) {
+  opts = opts || {};
+  const notes = [];
+  if (!WRITERS[target]) throw new FormatError('unknown target format ' + target);
+  if (target === b.format && opts.srcBytes && (!opts.dstPal || samePalette(opts.srcPal, opts.dstPal))) {
+    notes.push('Same format: the entry is copied unchanged.');
+    return { bytes: toU8(opts.srcBytes).slice(), notes, back: parseBody(opts.srcBytes, target) };
+  }
+  const w = cloneBody(b);
+  if (opts.srcPal && opts.dstPal && !samePalette(opts.srcPal, opts.dstPal)) {
+    remapColours(w, makeColourMaps(opts.srcPal, opts.dstPal));
+    notes.push('Colours mapped to the target palette (shaded polygons by ramp, the rest by nearest colour).');
+  } else if (b.format !== target && !opts.dstPal) {
+    notes.push('No target palette loaded: the colour indices are kept as they are.');
+  }
+  const textured = w.polys.filter(p => p.textured).length;
+  if (textured) notes.push(textured + ' textured polygons are written without their texture (flat or gouraud).');
+  if (target !== 'lba2' && w.polys.some(p => p.mat !== p.src && b.format === 'demo')) notes.push('Demo-only materials are written as flat / gouraud.');
+  if (target === 'lba2') {
+    const big = w.polys.filter(p => p.verts.length > 4).length;
+    if (big) notes.push(big + ' polygons with more than 4 points are split into triangles (LBA2 has triangles and quads only).');
+  }
+  const bytes = WRITERS[target](w);
+  const back = parseBody(bytes, target);
+  return { bytes, notes, back };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mesh for viewing and exporting: triangles (positions, normals, colours, joints), lines
+
+function buildMesh(b, pal, opts) {
+  opts = opts || {};
+  pal = pal || greyPalette();
+  const smooth = opts.smooth !== false, bake = opts.bake !== false;
+  const abs = absPoints(b);
+  const geo = geometricVertexNormals(b, abs);
+  const usable = i => i >= 0 && i < b.normals.length && (b.normals[i][0] || b.normals[i][1] || b.normals[i][2]);
+  const pos = [], nor = [], col = [], jnt = [], triBase = [], triBone = [];
+  const push = (p, n, c, j) => { pos.push(p[0], p[1], p[2]); nor.push(n[0], n[1], n[2]); col.push(c[0] / 255, c[1] / 255, c[2] / 255); jnt.push(j); };
+  for (const p of b.polys) {
+    if (p.verts.length < 3) continue;
+    const fn = faceNormal(abs, p.verts);
+    const gour = smooth && p.mat >= MAT.GOURAUD;
+    const ns = p.verts.map((v, k) => gour ? (usable(p.normals[k]) ? normalize(b.normals[p.normals[k]]) : geo[v]) : fn);
+    const cs = p.verts.map((v, k) => rgb(pal, colourIndex(p.colour, p.mat, ns[k], bake)));
+    const base = colourIndex(p.colour, p.mat, fn, false);
+    for (let k = 1; k + 1 < p.verts.length; k++) {
+      for (const q of [0, k, k + 1]) push(abs[p.verts[q]], ns[q], cs[q], b.vbone[p.verts[q]]);
+      triBase.push(base); triBone.push(b.vbone[p.verts[0]]);
+    }
+  }
+  // spheres as small uv spheres
+  const SEG = 12, RING = 8;
+  for (const s of b.spheres) {
+    const c0 = abs[s.v];
+    if (!c0) continue;
+    const j = b.vbone[s.v];
+    const ring = [];
+    for (let i = 0; i <= RING; i++) {
+      const th = Math.PI * i / RING, row = [];
+      for (let k = 0; k <= SEG; k++) {
+        const ph = 2 * Math.PI * k / SEG;
+        row.push([Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)]);
+      }
+      ring.push(row);
+    }
+    const ci = s.colour & 255;
+    const colourOf = n => {
+      const c = rgb(pal, ci);
+      if (!bake) return c;
+      const f = 0.55 + 0.45 * Math.max(0, n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2]);
+      return [c[0] * f, c[1] * f, c[2] * f];
+    };
+    const P = n => [c0[0] + n[0] * s.radius, c0[1] + n[1] * s.radius, c0[2] + n[2] * s.radius];
+    for (let i = 0; i < RING; i++) for (let k = 0; k < SEG; k++) {
+      const a = ring[i][k], bb = ring[i + 1][k], c = ring[i + 1][k + 1], d = ring[i][k + 1];
+      for (const tri of [[a, d, c], [a, c, bb]]) {
+        for (const n of tri) push(P(n), n, colourOf(n), j);
+        triBase.push(ci); triBone.push(j);
+      }
+    }
+  }
+  const lpos = [], lcol = [], ljnt = [];
+  for (const l of b.lines) {
+    const c = rgb(pal, l.colour & 255);
+    for (const v of [l.a, l.b]) { const p = abs[v]; lpos.push(p[0], p[1], p[2]); lcol.push(c[0] / 255, c[1] / 255, c[2] / 255); ljnt.push(b.vbone[v]); }
+  }
+  return {
+    positions: new Float32Array(pos), normals: new Float32Array(nor), colours: new Float32Array(col), joints: new Uint16Array(jnt),
+    triBase, triBone, linePositions: new Float32Array(lpos), lineColours: new Float32Array(lcol), lineJoints: new Uint16Array(ljnt),
+    abs, joints3: jointPositions(b, abs),
+  };
+}
+
+const srgbToLinear = c => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+
+// ---------------------------------------------------------------------------------------------
+// GLB: one skinned mesh (triangles + lines) with a joint node per bone
+
+function buildGLB(b, pal, opts) {
+  opts = opts || {};
+  const scale = opts.scale > 0 ? opts.scale : 0.001;
+  const m = buildMesh(b, pal, { smooth: opts.smooth !== false, bake: !!opts.bake });
+  const nb = b.bones.length;
+  const bin = new Writer();
+  const json = {
+    asset: { version: '2.0', generator: 'LBA model converter' },
+    scene: 0, scenes: [{ name: opts.name || 'lba_body', nodes: [] }],
+    nodes: [], meshes: [], skins: [], materials: [], accessors: [], bufferViews: [], buffers: [],
+  };
+  const view = (typed, target) => {
+    bin.align(4);
+    const bv = { buffer: 0, byteOffset: bin.p, byteLength: typed.byteLength };
+    if (target) bv.target = target;
+    bin.bytes(new Uint8Array(typed.buffer, typed.byteOffset, typed.byteLength));
+    json.bufferViews.push(bv);
+    return json.bufferViews.length - 1;
+  };
+  const accessor = (typed, componentType, type, count, extra) => {
+    const a = Object.assign({ bufferView: view(typed, extra && extra.target), componentType, count, type }, extra || {});
+    delete a.target;
+    json.accessors.push(a);
+    return json.accessors.length - 1;
+  };
+  const minmax = (arr) => {
+    const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < arr.length; i += 3) for (let k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], arr[i + k]); mx[k] = Math.max(mx[k], arr[i + k]); }
+    return { min: mn, max: mx };
+  };
+  const attributes = (positions, colours, joints, normals) => {
+    const n = positions.length / 3;
+    const p = positions.map(v => v * scale);
+    const attr = { POSITION: accessor(p, 5126, 'VEC3', n, Object.assign({ target: 34962 }, minmax(p))) };
+    if (normals) attr.NORMAL = accessor(normals.slice(), 5126, 'VEC3', n, { target: 34962 });
+    attr.COLOR_0 = accessor(colours.map(srgbToLinear), 5126, 'VEC3', n, { target: 34962 });
+    const j4 = new Uint16Array(n * 4), w4 = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) { j4[4 * i] = joints[i]; w4[4 * i] = 1; }
+    attr.JOINTS_0 = accessor(j4, 5123, 'VEC4', n, { target: 34962 });
+    attr.WEIGHTS_0 = accessor(w4, 5126, 'VEC4', n, { target: 34962 });
+    return attr;
+  };
+  json.materials.push({ name: 'vertex_colours', pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 1 } });
+  const primitives = [];
+  if (m.positions.length) primitives.push({ attributes: attributes(m.positions, m.colours, m.joints, m.normals), material: 0, mode: 4 });
+  if (m.linePositions.length) primitives.push({ attributes: attributes(m.linePositions, m.lineColours, m.lineJoints, null), material: 0, mode: 1 });
+  if (!primitives.length) throw new FormatError('this body has no polygons, lines or spheres to export');
+  json.meshes.push({ name: 'body', primitives });
+  // joints: node 1 + bone index, translated from the parent joint
+  const J = m.joints3;
+  const ibm = new Float32Array(16 * nb);
+  b.bones.forEach((bone, i) => {
+    const pj = bone.parent >= 0 ? J[bone.parent] : [0, 0, 0];
+    ibm.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -J[i][0] * scale, -J[i][1] * scale, -J[i][2] * scale, 1], 16 * i);
+    const node = { name: 'bone_' + i, translation: [(J[i][0] - pj[0]) * scale, (J[i][1] - pj[1]) * scale, (J[i][2] - pj[2]) * scale] };
+    json.nodes[1 + i] = node;
+  });
+  b.bones.forEach((bone, i) => {
+    if (bone.parent >= 0) { const pn = json.nodes[1 + bone.parent]; (pn.children = pn.children || []).push(1 + i); }
+  });
+  json.nodes[0] = { name: opts.name || 'lba_body', mesh: 0, skin: 0, extras: { lbaFormat: b.format, bones: nb } };
+  const roots = b.bones.map((bone, i) => bone.parent < 0 ? 1 + i : -1).filter(i => i >= 0);
+  json.skins.push({ name: 'skeleton', joints: b.bones.map((_, i) => 1 + i), inverseBindMatrices: accessor(ibm, 5126, 'MAT4', nb) });
+  if (roots.length === 1) json.skins[0].skeleton = roots[0];
+  json.scenes[0].nodes = [0].concat(roots);
+  bin.align(4);
+  const binBytes = bin.result();
+  json.buffers.push({ byteLength: binBytes.length });
+  let jsonBytes = new TextEncoder().encode(JSON.stringify(json));
+  const jsonPad = (4 - jsonBytes.length % 4) % 4;
+  const out = new Writer();
+  out.u32(0x46546C67); out.u32(2); out.u32(12 + 8 + jsonBytes.length + jsonPad + 8 + binBytes.length);
+  out.u32(jsonBytes.length + jsonPad); out.u32(0x4E4F534A); out.bytes(jsonBytes); for (let i = 0; i < jsonPad; i++) out.u8(0x20);
+  out.u32(binBytes.length); out.u32(0x004E4942); out.bytes(binBytes);
+  return out.result();
+}
+
+// OBJ + MTL: a group per bone, a material per palette colour, vertex colours after the positions
+function buildOBJ(b, pal, opts) {
+  opts = opts || {};
+  pal = pal || greyPalette();
+  const scale = opts.scale > 0 ? opts.scale : 0.001;
+  const name = opts.name || 'lba_body';
+  const m = buildMesh(b, pal, { smooth: opts.smooth !== false, bake: !!opts.bake });
+  const f = x => (Math.round(x * 1e6) / 1e6).toString();
+  const lines = ['# ' + name + ' (' + FORMAT_NAMES[b.format] + ' body), written by the LBA model converter', 'mtllib ' + name + '.mtl', 'o ' + name];
+  const nvt = m.positions.length / 3;
+  for (let i = 0; i < nvt; i++) lines.push('v ' + f(m.positions[3 * i] * scale) + ' ' + f(m.positions[3 * i + 1] * scale) + ' ' + f(m.positions[3 * i + 2] * scale) + ' ' + f(m.colours[3 * i]) + ' ' + f(m.colours[3 * i + 1]) + ' ' + f(m.colours[3 * i + 2]));
+  for (let i = 0; i < nvt; i++) lines.push('vn ' + f(m.normals[3 * i]) + ' ' + f(m.normals[3 * i + 1]) + ' ' + f(m.normals[3 * i + 2]));
+  const used = new Set();
+  const order = m.triBase.map((_, t) => t).sort((x, y) => m.triBone[x] - m.triBone[y] || m.triBase[x] - m.triBase[y] || x - y);
+  let bone = -1, mat = -1;
+  for (const t of order) {
+    if (m.triBone[t] !== bone) { bone = m.triBone[t]; mat = -1; lines.push('g bone_' + bone); }
+    if (m.triBase[t] !== mat) { mat = m.triBase[t]; used.add(mat); lines.push('usemtl pal_' + mat); }
+    const a = 3 * t + 1;
+    lines.push('f ' + a + '//' + a + ' ' + (a + 1) + '//' + (a + 1) + ' ' + (a + 2) + '//' + (a + 2));
+  }
+  if (m.linePositions.length) {
+    lines.push('g lines');
+    const nl = m.linePositions.length / 3;
+    for (let i = 0; i < nl; i++) lines.push('v ' + f(m.linePositions[3 * i] * scale) + ' ' + f(m.linePositions[3 * i + 1] * scale) + ' ' + f(m.linePositions[3 * i + 2] * scale) + ' ' + f(m.lineColours[3 * i]) + ' ' + f(m.lineColours[3 * i + 1]) + ' ' + f(m.lineColours[3 * i + 2]));
+    for (let i = 0; i < nl; i += 2) lines.push('l ' + (nvt + i + 1) + ' ' + (nvt + i + 2));
+  }
+  const mtl = ['# palette colours of ' + name];
+  for (const c of Array.from(used).sort((x, y) => x - y)) {
+    const v = rgb(pal, c);
+    mtl.push('newmtl pal_' + c, 'Kd ' + f(v[0] / 255) + ' ' + f(v[1] / 255) + ' ' + f(v[2] / 255), 'Ka 0 0 0', 'Ks 0 0 0', 'd 1', 'illum 1', '');
+  }
+  return { obj: lines.join('\n') + '\n', mtl: mtl.join('\n') + '\n' };
+}
+
+global.LBACore = {
+  FormatError, FORMAT_NAMES, MAT, MAT_NAMES, toU8, lzDecompress, readHQR, hqrReplace,
+  parseBody, parseLBA1, parseLBA2, parseDemo, scoreBody, detectBodyFormat, detectHQRFormat,
+  absPoints, jointPositions, faceNormal, geometricVertexNormals, readPalette, paletteFromFile, greyPalette, rgb,
+  makeColourMaps, samePalette, remapColours, cloneBody, writeLBA1, writeLBA2, writeDemo, convertBody, summary,
+  buildMesh, buildGLB, buildOBJ,
+};
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+
+<script type="module">
+const C = window.LBACore;
+const $ = id => document.getElementById(id);
+
+const state = {
+  hqr: null, hqrName: '', raw: null, format: null, detected: null, bodies: [],
+  pal: null, palData: null, palName: '', tPal: null, tPalData: null, tHqr: null, tHqrName: '', selected: -1,
+};
+
+function showMessage(text, kind) {
+  const box = $('msg');
+  box.innerHTML = '';
+  if (!text) return;
+  const d = document.createElement('div');
+  d.className = 'msg ' + (kind || 'ok');
+  d.textContent = text;
+  box.appendChild(d);
+}
+const showError = e => { console.error(e); showMessage(e && e.message ? e.message : String(e), 'error'); };
+
+function download(bytes, name, type) {
+  const blob = new Blob([bytes], { type: type || 'application/octet-stream' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+const readFile = file => file.arrayBuffer().then(b => new Uint8Array(b));
+const baseName = name => name.replace(/\.[^.]*$/, '');
+const pad3 = i => String(i).padStart(3, '0');
+
+// ---------------------------------------------------------------------------------------------
+// Loading
+
+function loadBodies(u8, name) {
+  state.hqr = null; state.raw = null; state.hqrName = name; state.selected = -1;
+  let hqr = null;
+  try { hqr = C.readHQR(u8); } catch (e) { hqr = null; }
+  if (hqr) {
+    state.hqr = hqr;
+    state.detected = C.detectHQRFormat(hqr).format;
+  } else {
+    // maybe one raw body
+    state.raw = u8;
+    state.detected = C.detectBodyFormat(u8);
+    if (!state.detected) throw new C.FormatError(name + ' is neither an HQR archive nor a body of LBA1, LBA2 or the LBA2 demo.');
+  }
+  parseAll();
+  if (!state.bodies.some(b => b.body)) {
+    const which = $('fmt').value === 'auto' ? '' : ' as ' + C.FORMAT_NAMES[$('fmt').value];
+    throw new C.FormatError(name + ' holds no bodies that can be read' + which + ' - is it BODY.HQR?');
+  }
+  const ok = state.bodies.filter(b => b.body).length;
+  showMessage('Loaded ' + name + ': ' + ok + (ok === 1 ? ' body' : ' bodies') + ' (' + C.FORMAT_NAMES[state.format] + ').', 'ok');
+  const first = state.bodies.findIndex(b => b.body);
+  select(first);
+}
+
+function parseAll() {
+  const chosen = $('fmt').value;
+  state.format = chosen === 'auto' ? state.detected : chosen;
+  $('detected').textContent = state.detected ? 'detected: ' + C.FORMAT_NAMES[state.detected] : 'not detected';
+  state.bodies = [];
+  const n = state.hqr ? state.hqr.count : 1;
+  for (let i = 0; i < n; i++) {
+    const entry = { index: i, bytes: null, body: null, error: null };
+    try {
+      entry.bytes = state.hqr ? state.hqr.getEntry(i) : state.raw;
+      if (!entry.bytes) entry.error = 'empty';
+      else if (state.format) entry.body = C.parseBody(entry.bytes, state.format);
+      else entry.error = 'unknown format';
+    } catch (e) { entry.error = e.message; }
+    state.bodies.push(entry);
+  }
+  renderList();
+  // the convert target: another game than the source
+  if ($('convTarget').value === state.format) $('convTarget').value = state.format === 'lba1' ? 'lba2' : 'lba1';
+}
+
+function loadPalette(u8, name) {
+  state.palData = u8;
+  state.pal = C.paletteFromFile(u8, Number($('palIndex').value) || 0);
+  state.palName = name;
+  $('palName').textContent = 'palette: ' + name;
+  renderList();
+  if (state.selected >= 0) select(state.selected);
+}
+
+function loadTargetPalette(u8, name) {
+  state.tPalData = u8;
+  state.tPal = C.paletteFromFile(u8, Number($('tPalIndex').value) || 0);
+  $('tPalName').textContent = 'palette: ' + name;
+}
+
+// ---------------------------------------------------------------------------------------------
+// List with thumbnails
+
+let observer = null;
+
+function renderList() {
+  const list = $('list');
+  list.innerHTML = '';
+  if (observer) observer.disconnect();
+  observer = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
+    for (const e of entries) if (e.isIntersecting) { drawThumb(e.target); observer.unobserve(e.target); }
+  }, { root: list }) : null;
+  const ok = state.bodies.filter(b => b.body).length;
+  $('count').textContent = state.bodies.length ? ok + ' of ' + state.bodies.length + ' entries' : '';
+  for (const entry of state.bodies) {
+    const btn = document.createElement('button');
+    btn.className = 'card' + (entry.body ? '' : ' bad') + (entry.index === state.selected ? ' sel' : '');
+    btn.dataset.index = entry.index;
+    const cv = document.createElement('canvas');
+    cv.width = 144; cv.height = 144;
+    btn.appendChild(cv);
+    const label = document.createElement('div');
+    if (entry.body) {
+      label.innerHTML = '<b>#' + entry.index + '</b><br>' + entry.body.verts.length + ' v · ' + entry.body.polys.length + ' p';
+    } else {
+      label.innerHTML = '<b>#' + entry.index + '</b><br>' + (entry.error === 'empty' ? 'empty' : 'not a body');
+      btn.title = entry.error || '';
+      btn.disabled = true;
+    }
+    btn.appendChild(label);
+    btn.addEventListener('click', () => select(entry.index));
+    list.appendChild(btn);
+    if (entry.body) { if (observer) observer.observe(btn); else drawThumb(btn); }
+  }
+}
+
+function drawThumb(btn) {
+  const entry = state.bodies[Number(btn.dataset.index)];
+  if (!entry || !entry.body) return;
+  const cv = btn.querySelector('canvas');
+  try { drawProjected(cv, entry.body); } catch (e) { /* a thumbnail is optional */ }
+}
+
+// a small painter's algorithm render from a 3/4 view
+function drawProjected(cv, body) {
+  const m = C.buildMesh(body, state.pal, { smooth: false, bake: true });
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const P = m.positions, n = P.length / 9;
+  if (!n) return;
+  const yaw = Math.PI / 4, pitch = 0.42, cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const proj = new Float32Array(P.length);
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+  for (let i = 0; i < P.length; i += 3) {
+    const x = P[i] * cy - P[i + 2] * sy, z0 = P[i] * sy + P[i + 2] * cy;
+    const y = P[i + 1] * cp - z0 * sp, z = P[i + 1] * sp + z0 * cp;
+    proj[i] = x; proj[i + 1] = -y; proj[i + 2] = z;
+    mnx = Math.min(mnx, x); mxx = Math.max(mxx, x); mny = Math.min(mny, -y); mxy = Math.max(mxy, -y);
+  }
+  const s = 0.9 * Math.min(cv.width / Math.max(1, mxx - mnx), cv.height / Math.max(1, mxy - mny));
+  const ox = cv.width / 2 - s * (mnx + mxx) / 2, oy = cv.height / 2 - s * (mny + mxy) / 2;
+  const order = Array.from({ length: n }, (_, t) => t).sort((a, b) =>
+    (proj[9 * a + 2] + proj[9 * a + 5] + proj[9 * a + 8]) - (proj[9 * b + 2] + proj[9 * b + 5] + proj[9 * b + 8]));
+  const Cl = m.colours;
+  for (const t of order) {
+    const i = 9 * t;
+    // back faces away (counter-clockwise front faces, y flipped on screen)
+    const ax = proj[i + 3] - proj[i], ay = proj[i + 4] - proj[i + 1], bx = proj[i + 6] - proj[i], by = proj[i + 7] - proj[i + 1];
+    if (ax * by - ay * bx > 0) continue;
+    const r = (Cl[i] + Cl[i + 3] + Cl[i + 6]) / 3, g = (Cl[i + 1] + Cl[i + 4] + Cl[i + 7]) / 3, bl = (Cl[i + 2] + Cl[i + 5] + Cl[i + 8]) / 3;
+    ctx.fillStyle = 'rgb(' + Math.round(r * 255) + ',' + Math.round(g * 255) + ',' + Math.round(bl * 255) + ')';
+    ctx.strokeStyle = ctx.fillStyle;
+    ctx.beginPath();
+    ctx.moveTo(ox + s * proj[i], oy + s * proj[i + 1]);
+    ctx.lineTo(ox + s * proj[i + 3], oy + s * proj[i + 4]);
+    ctx.lineTo(ox + s * proj[i + 6], oy + s * proj[i + 7]);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Selection, info, 3D view
+
+function current() { const e = state.bodies[state.selected]; return e && e.body ? e : null; }
+
+function select(i) {
+  state.selected = i;
+  for (const el of document.querySelectorAll('#list .card')) el.classList.toggle('sel', Number(el.dataset.index) === i);
+  const e = current();
+  for (const id of ['expGlb', 'expObj', 'convBin']) $(id).disabled = !e;
+  $('convHqr').disabled = !e || !state.tHqr;
+  if (!e) { $('info').textContent = ''; view.show(null); return; }
+  $('tHqrIndex').value = i;
+  const s = C.summary(e.body);
+  const abs = C.absPoints(e.body);
+  const mn = [0, 1, 2].map(k => Math.min(...abs.map(p => p[k]))), mx = [0, 1, 2].map(k => Math.max(...abs.map(p => p[k])));
+  const mats = Object.keys(s.materials).map(k => C.MAT_NAMES[k] + ' ' + s.materials[k]).join(', ');
+  $('info').textContent =
+    'Body #' + i + ' (' + C.FORMAT_NAMES[e.body.format] + ', ' + e.bytes.length + ' bytes)\n' +
+    'vertices ' + s.vertices + '   bones ' + s.bones + '   normals ' + s.normals + '\n' +
+    'polygons ' + s.polygons + (s.textured ? ' (' + s.textured + ' textured, shown untextured)' : '') + '   lines ' + s.lines + '   spheres ' + s.spheres + '\n' +
+    'materials: ' + mats + '\n' +
+    'size x ' + mn[0] + '..' + mx[0] + '   y ' + mn[1] + '..' + mx[1] + '   z ' + mn[2] + '..' + mx[2] + '\n' +
+    'bone parents: ' + s.parents.join(' ');
+  view.show(e.body);
+}
+
+const view = {
+  ready: false, THREE: null, show(body) { this.body = body; if (this.ready) this.rebuild(); },
+};
+
+async function initView() {
+  let THREE, OrbitControls;
+  try {
+    THREE = await import('three');
+    ({ OrbitControls } = await import('three/addons/controls/OrbitControls.js'));
+  } catch (e) {
+    $('viewNote').textContent = 'The 3D view needs three.js from the internet (cdn.jsdelivr.net). Lists, export and conversion still work.';
+    return;
+  }
+  const canvas = $('view');
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+  } catch (e) {
+    $('viewNote').textContent = 'WebGL is not available in this browser. Lists, export and conversion still work.';
+    return;
+  }
+  // the vertex colours are the palette's sRGB values: show them (and all other colours) unchanged
+  THREE.ColorManagement.enabled = false;
+  renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x22252c);
+  const camera = new THREE.PerspectiveCamera(35, 1, 1, 1e6);
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  const model = new THREE.Group(), bones = new THREE.Group();
+  scene.add(model, bones);
+  let grid = null, fit = null;
+
+  function resize() {
+    const w = canvas.clientWidth || 600, h = canvas.clientHeight || 400;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  new ResizeObserver(resize).observe(canvas);
+  resize();
+
+  function clear(group) {
+    for (const o of [...group.children]) { group.remove(o); o.geometry && o.geometry.dispose(); o.material && o.material.dispose(); }
+  }
+
+  function resetView() {
+    if (!fit) return;
+    const d = fit.radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2)) * 1.05;
+    const dir = new THREE.Vector3(0.55, 0.42, 0.72).normalize();
+    camera.position.copy(fit.center).addScaledVector(dir, d);
+    camera.near = d / 100; camera.far = d * 100;
+    camera.updateProjectionMatrix();
+    controls.target.copy(fit.center);
+    controls.update();
+  }
+
+  view.rebuild = function () {
+    clear(model); clear(bones);
+    if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); grid = null; }
+    const body = this.body;
+    $('viewNote').textContent = body ? '' : 'No body selected';
+    if (!body) return;
+    const m = C.buildMesh(body, state.pal, { smooth: $('optSmooth').checked, bake: true });
+    if (m.positions.length) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
+      g.setAttribute('color', new THREE.BufferAttribute(m.colours, 3));
+      const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, wireframe: $('optWire').checked, side: THREE.FrontSide }));
+      model.add(mesh);
+      if ($('optWire').checked) {
+        const back = new THREE.Mesh(g.clone(), new THREE.MeshBasicMaterial({ vertexColors: true, wireframe: true, transparent: true, opacity: 0.25, side: THREE.BackSide }));
+        model.add(back);
+      }
+    }
+    if (m.linePositions.length) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(m.linePositions, 3));
+      g.setAttribute('color', new THREE.BufferAttribute(m.lineColours, 3));
+      model.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true })));
+    }
+    if ($('optBones').checked) {
+      const J = m.joints3, seg = [];
+      body.bones.forEach((b, i) => { if (b.parent >= 0) seg.push(...J[b.parent], ...J[i]); });
+      const gl = new THREE.BufferGeometry();
+      gl.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
+      const lines = new THREE.LineSegments(gl, new THREE.LineBasicMaterial({ color: 0xffd23f, depthTest: false }));
+      lines.renderOrder = 10;
+      const gp = new THREE.BufferGeometry();
+      gp.setAttribute('position', new THREE.Float32BufferAttribute(J.flat(), 3));
+      const pts = new THREE.Points(gp, new THREE.PointsMaterial({ color: 0xff5a36, size: 7, sizeAttenuation: false, depthTest: false }));
+      pts.renderOrder = 11;
+      bones.add(lines, pts);
+    }
+    const box = new THREE.Box3();
+    for (const p of m.abs) box.expandByPoint(new THREE.Vector3(p[0], p[1], p[2]));
+    if (box.isEmpty()) box.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const sameBody = fit && fit.body === body;
+    fit = { center: sphere.center, radius: Math.max(1, sphere.radius), body };
+    if ($('optGrid').checked) {
+      const size = Math.pow(2, Math.ceil(Math.log2(fit.radius * 3)));
+      grid = new THREE.GridHelper(size, 16, 0x5a606c, 0x3a3f49);
+      grid.position.y = Math.min(0, box.min.y);
+      scene.add(grid);
+    }
+    if (!sameBody) resetView();
+  };
+
+  $('resetView').addEventListener('click', resetView);
+  for (const id of ['optWire', 'optBones', 'optSmooth', 'optGrid']) $(id).addEventListener('change', () => view.rebuild());
+  renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+  view.ready = true;
+  view.rebuild();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Export and convert
+
+function exportName(e) { return (e.body.format) + '_body_' + pad3(e.index); }
+
+$('expGlb').addEventListener('click', () => {
+  try {
+    const e = current(); if (!e) return;
+    const name = exportName(e);
+    const bytes = C.buildGLB(e.body, state.pal, { scale: Number($('expScale').value), bake: $('expBake').checked, smooth: $('optSmooth').checked, name });
+    download(bytes, name + '.glb', 'model/gltf-binary');
+    showMessage('Wrote ' + name + '.glb (' + bytes.length + ' bytes).', 'ok');
+  } catch (err) { showError(err); }
+});
+
+$('expObj').addEventListener('click', () => {
+  try {
+    const e = current(); if (!e) return;
+    const name = exportName(e);
+    const r = C.buildOBJ(e.body, state.pal, { scale: Number($('expScale').value), bake: $('expBake').checked, smooth: $('optSmooth').checked, name });
+    download(r.obj, name + '.obj', 'text/plain');
+    setTimeout(() => download(r.mtl, name + '.mtl', 'text/plain'), 300);
+    showMessage('Wrote ' + name + '.obj and ' + name + '.mtl.', 'ok');
+  } catch (err) { showError(err); }
+});
+
+function convertCurrent() {
+  const e = current();
+  if (!e) throw new Error('Select a body first.');
+  const target = $('convTarget').value;
+  let dstPal = state.tPal;
+  if (!dstPal && target === e.body.format) dstPal = state.pal;
+  const r = C.convertBody(e.body, target, { srcBytes: e.bytes, srcPal: state.pal, dstPal });
+  const s = C.summary(r.back);
+  const lines = r.notes.concat(['Read back as ' + C.FORMAT_NAMES[target] + ': ' + s.vertices + ' vertices, ' + s.bones + ' bones, ' + s.polygons + ' polygons, ' + s.lines + ' lines, ' + s.spheres + ' spheres (' + r.bytes.length + ' bytes).']);
+  $('convOut').textContent = lines.join(' ');
+  return { e, target, bytes: r.bytes, text: lines.join('\n') };
+}
+
+$('convBin').addEventListener('click', () => {
+  try {
+    const r = convertCurrent();
+    const name = r.target + '_body_from_' + r.e.body.format + '_' + pad3(r.e.index) + '.bin';
+    download(r.bytes, name);
+    showMessage('Wrote ' + name + '.\n' + r.text, 'ok');
+  } catch (err) { showError(err); }
+});
+
+$('convHqr').addEventListener('click', () => {
+  try {
+    if (!state.tHqr) throw new Error('Pick the HQR to copy first.');
+    const r = convertCurrent();
+    const index = Number($('tHqrIndex').value);
+    const out = C.hqrReplace(state.tHqr, index, r.bytes);
+    // check the new file before handing it out
+    const back = C.readHQR(out);
+    const entry = back.getEntry(index);
+    if (!entry || entry.length !== r.bytes.length || entry.some((v, k) => v !== r.bytes[k])) throw new Error('The new HQR does not read back correctly - nothing written.');
+    for (let i = 0; i < state.tHqr.count; i++) {
+      if (i === index) continue;
+      const a = state.tHqr.getEntry(i), b = back.getEntry(i);
+      if ((a === null) !== (b === null) || (a && (a.length !== b.length || a.some((v, k) => v !== b[k])))) throw new Error('Entry ' + i + ' changed while copying - nothing written.');
+    }
+    const name = baseName(state.tHqrName) + '_new_' + index + '.HQR';
+    download(out, name);
+    showMessage('Wrote ' + name + ' (' + back.count + ' entries, entry ' + index + ' replaced, stored uncompressed). Keep a copy of your original before you put it in place.\n' + r.text, 'ok');
+  } catch (err) { showError(err); }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Inputs
+
+function onFile(id, handler) {
+  $(id).addEventListener('change', async ev => {
+    const f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    try { handler(await readFile(f), f.name); } catch (err) { showError(err); }
+  });
+}
+
+onFile('bodyFile', loadBodies);
+onFile('ressFile', loadPalette);
+onFile('tPalFile', loadTargetPalette);
+onFile('tHqrFile', (u8, name) => {
+  state.tHqr = C.readHQR(u8);
+  state.tHqrName = name;
+  $('tHqrName').textContent = name + ': entries 0..' + (state.tHqr.count - 1) + ' (entry ' + state.tHqr.count + ' adds one)';
+  $('convHqr').disabled = !current();
+});
+$('fmt').addEventListener('change', () => {
+  try {
+    if (!state.hqr && !state.raw) return;
+    parseAll();
+    const ok = state.bodies.filter(b => b.body).length;
+    if (!ok) showMessage('No body can be read as ' + C.FORMAT_NAMES[state.format] + '.', 'error'); else showMessage(ok + ' bodies read as ' + C.FORMAT_NAMES[state.format] + '.', 'ok');
+    select(state.bodies.findIndex(b => b.body));
+  } catch (err) { showError(err); }
+});
+$('palIndex').addEventListener('change', () => { try { if (state.palData) loadPalette(state.palData, state.palName); } catch (err) { showError(err); } });
+$('tPalIndex').addEventListener('change', () => { try { if (state.tPalData) loadTargetPalette(state.tPalData, $('tPalName').textContent.replace(/^palette: /, '')); } catch (err) { showError(err); } });
+
+// for tests: load data without file pickers
+window.lbaTest = {
+  loadBodies: (u8, name) => loadBodies(C.toU8(u8), name || 'BODY.HQR'),
+  loadPalette: (u8, name) => loadPalette(C.toU8(u8), name || 'RESS.HQR'),
+  select: i => select(i),
+  set: (id, value) => { const el = $(id); if (el.type === 'checkbox') el.checked = !!value; else el.value = value; el.dispatchEvent(new Event('change')); },
+  view: initView(),
+};
+</script>
+</body>
+</html>
