@@ -158,6 +158,16 @@ button.ghost { background: transparent; color: var(--ink); border: 1px solid var
         <span id="tHqrName" class="small"></span>
       </div>
       <button id="convHqr" disabled>Write new HQR</button>
+      <label style="margin-top:14px">Or replace directly in the game folder (Chrome / Edge)</label>
+      <div class="row" style="margin-top:6px">
+        <button class="ghost" id="gameDir">Choose game folder</button>
+        <label for="gameHqrName">file</label><input type="text" id="gameHqrName" value="BODY.HQR" style="width:9em">
+        <span id="gameDirName" class="small">no folder chosen</span>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button id="convInPlace" disabled>Replace in game folder</button>
+        <button class="ghost" id="restoreOrig" disabled>Put the original back</button>
+      </div>
       <div class="note">Converted models keep the bones of the source model. The animations of the target game only fit when the skeletons match: the same bones in the same order with the same parents (compare "bone parents" above). LBA1 and LBA2 Twinsen, for example, differ in proportions and some LBA2 hero bodies have extra bones. The new HQR is a download with the entry stored uncompressed; your original file is never changed.</div>
       <div id="convOut" class="small"></div>
     </section>
@@ -1468,6 +1478,7 @@ function select(i) {
   const e = current();
   for (const id of ['expGlb', 'expObj', 'convBin']) $(id).disabled = !e;
   $('convHqr').disabled = !e || !state.tHqr;
+  $('convInPlace').disabled = !e || !state.gameDir;
   if (!e) { $('info').textContent = ''; view.show(null); return; }
   $('tHqrIndex').value = i;
   const s = C.summary(e.body);
@@ -1667,6 +1678,82 @@ $('convHqr').addEventListener('click', () => {
     const name = baseName(state.tHqrName) + '_new_' + index + '.HQR';
     download(out, name);
     showMessage('Wrote ' + name + ' (' + back.count + ' entries, entry ' + index + ' replaced, stored uncompressed). Keep a copy of your original before you put it in place.\n' + r.text, 'ok');
+  } catch (err) { showError(err); }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Replace in the game folder itself (File System Access API: Chrome, Edge). The first time a
+// file is replaced its original is kept next to it as <name>.origineel - never overwritten after.
+
+function checkReplaced(before, out, index, bytes) {
+  const back = C.readHQR(out);
+  const entry = back.getEntry(index);
+  if (!entry || entry.length !== bytes.length || entry.some((v, k) => v !== bytes[k])) throw new Error('The new HQR does not read back correctly - nothing written.');
+  for (let i = 0; i < before.count; i++) {
+    if (i === index) continue;
+    const a = before.getEntry(i), b = back.getEntry(i);
+    if ((a === null) !== (b === null) || (a && (a.length !== b.length || a.some((v, k) => v !== b[k])))) throw new Error('Entry ' + i + ' changed while copying - nothing written.');
+  }
+  return back;
+}
+
+async function readHandle(fh) { return new Uint8Array(await (await fh.getFile()).arrayBuffer()); }
+async function writeHandle(fh, bytes) { const w = await fh.createWritable(); await w.write(bytes); await w.close(); }
+async function exists(dir, name) { try { await dir.getFileHandle(name); return true; } catch (e) { return false; } }
+function gameFileName() { return ($('gameHqrName').value || 'BODY.HQR').trim(); }
+
+async function loadGameFile() {
+  const name = gameFileName();
+  const u8 = await readHandle(await state.gameDir.getFileHandle(name));
+  state.tHqr = C.readHQR(u8);
+  state.tHqrName = name;
+  const backup = await exists(state.gameDir, name + '.origineel');
+  $('gameDirName').textContent = state.gameDir.name + '/' + name + ': entries 0..' + (state.tHqr.count - 1) + (backup ? ' - backup ' + name + '.origineel present' : ' - no backup yet (made on the first replace)');
+  $('tHqrName').textContent = name + ' (game folder): entries 0..' + (state.tHqr.count - 1);
+  $('convInPlace').disabled = !current();
+  $('convHqr').disabled = !current();
+  $('restoreOrig').disabled = !backup;
+}
+
+$('gameDir').addEventListener('click', async () => {
+  try {
+    if (!window.showDirectoryPicker) throw new Error('This browser cannot write to a folder - use Chrome or Edge, or "Write new HQR" (a download).');
+    state.gameDir = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await loadGameFile();
+    showMessage('Game folder ' + state.gameDir.name + ' chosen.', 'ok');
+  } catch (err) { if (err.name !== 'AbortError') showError(err); }
+});
+$('gameHqrName').addEventListener('change', async () => { if (state.gameDir) { try { await loadGameFile(); } catch (err) { showError(err); } } });
+
+$('convInPlace').addEventListener('click', async () => {
+  try {
+    if (!state.gameDir) throw new Error('Choose the game folder first.');
+    const r = convertCurrent();
+    const index = Number($('tHqrIndex').value);
+    const name = gameFileName();
+    const fh = await state.gameDir.getFileHandle(name);
+    const cur = await readHandle(fh);
+    const before = C.readHQR(cur);
+    const out = C.hqrReplace(before, index, r.bytes);
+    checkReplaced(before, out, index, r.bytes);
+    let made = '';
+    if (!(await exists(state.gameDir, name + '.origineel'))) {
+      await writeHandle(await state.gameDir.getFileHandle(name + '.origineel', { create: true }), cur);
+      made = ' Backup of the original: ' + name + '.origineel.';
+    }
+    await writeHandle(fh, out);
+    await loadGameFile();
+    showMessage('Replaced entry ' + index + ' in ' + state.gameDir.name + '/' + name + ' (stored uncompressed).' + made + '\n' + r.text, 'ok');
+  } catch (err) { showError(err); }
+});
+
+$('restoreOrig').addEventListener('click', async () => {
+  try {
+    const name = gameFileName();
+    const orig = await readHandle(await state.gameDir.getFileHandle(name + '.origineel'));
+    await writeHandle(await state.gameDir.getFileHandle(name), orig);
+    await loadGameFile();
+    showMessage(name + ' is the original again (from ' + name + '.origineel).', 'ok');
   } catch (err) { showError(err); }
 });
 
