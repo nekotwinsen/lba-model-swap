@@ -991,6 +991,16 @@ function writeLBA2(b) {
     if (p.verts.length <= 4) add(p.verts.slice());
     else for (let k = 1; k + 1 < p.verts.length; k++) add([p.verts[0], p.verts[k], p.verts[k + 1]]);
   });
+  // (the limits of LBA2's renderer: a bigger body crashes the game)
+  const tooMany = [];
+  let polyCount = 0;
+  for (const list of blocks.values()) polyCount += list.length;
+  if (npt > 550) tooMany.push(npt + ' points (max 550)');
+  if (polyCount > 550) tooMany.push(polyCount + ' polygons (max 550)');
+  if (b.spheres.length > 50) tooMany.push(b.spheres.length + ' spheres (max 50)');
+  if (b.lines.length > 50) tooMany.push(b.lines.length + ' lines (max 50)');
+  if (b.bones.length > 30) tooMany.push(b.bones.length + ' groups (max 30)');
+  if (tooMany.length) throw new FormatError('too big for LBA2: ' + tooMany.join(', '));
   const w = new Writer();
   w.u32(b.bones.length > 1 ? 0x110 : 0x10);
   w.s16(96); w.s16(0);
@@ -1001,11 +1011,13 @@ function writeLBA2(b) {
   table.push([b.bones.length, w.p]);
   b.bones.forEach((bone, i) => { w.u16(bone.parent < 0 ? 0xFFFF : bone.parent); w.u16(bone.parent < 0 ? 0 : bone.base); w.u16(bone.count); w.u16(facePerBone[i]); });
   table.push([npt, w.p]);
-  for (const v of b.verts) { w.s16(clamp16(v[0])); w.s16(clamp16(v[1])); w.s16(clamp16(v[2])); w.s16(0); }
+  // (the 4th value of a point: its group - real LBA2 bodies fill it in)
+  b.verts.forEach((v, i) => { w.s16(clamp16(v[0])); w.s16(clamp16(v[1])); w.s16(clamp16(v[2])); w.s16(b.vbone[i] || 0); });
   table.push([npt, w.p]);
   for (const n of pointNormals) { w.s16(clamp16(n[0])); w.s16(clamp16(n[1])); w.s16(clamp16(n[2])); w.s16(clamp16(n[3] || 0)); }
   table.push([faces.length, w.p]);
-  for (const f of faces) { w.s16(clamp16(f.raw[0])); w.s16(clamp16(f.raw[1])); w.s16(clamp16(f.raw[2])); w.s16(clamp16(f.raw[3] || 0)); }
+  // (the 4th value of a face normal: its group, as in real LBA2 bodies)
+  for (const f of faces) { w.s16(clamp16(f.raw[0])); w.s16(clamp16(f.raw[1])); w.s16(clamp16(f.raw[2])); w.s16(f.bone || 0); }
   const polyStart = w.p;
   let npoly = 0;
   for (const key of Array.from(blocks.keys()).sort((x, y) => (x & 0xFF) - (y & 0xFF) || x - y)) {
@@ -1022,9 +1034,11 @@ function writeLBA2(b) {
   }
   table.push([npoly, polyStart]);
   table.push([b.lines.length, w.p]);
-  for (const l of b.lines) { w.u16(0); w.u16(l.colour & 0xFFFF); w.u16(l.a); w.u16(l.b); }
+  // (a line's colour carries the flag 0x1000 in real LBA2 bodies)
+  for (const l of b.lines) { w.u16(0); w.u16((l.colour & 0xFFFF) | 0x1000); w.u16(l.a); w.u16(l.b); }
   table.push([b.spheres.length, w.p]);
-  for (const s of b.spheres) { w.u16(s.fill & 0xFFFF); w.u16(s.colour & 0xFFFF); w.u16(s.v); w.u16(Math.min(65535, s.radius)); }
+  // (LBA2 knows two sphere types only - 0 solid, 1 transparent: any other type jumps past its table and crashes the game)
+  for (const s of b.spheres) { w.u16(s.fill === 1 ? 1 : 0); w.u16(s.colour & 0xFFFF); w.u16(s.v); w.u16(Math.min(65535, s.radius)); }
   table.push([0, w.p]);
   table.forEach(([n, o], i) => { w.setS32(32 + 8 * i, n); w.setS32(36 + 8 * i, o); });
   return w.result();
