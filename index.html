@@ -99,7 +99,7 @@ button.ghost { background: transparent; color: var(--ink); border: 1px solid var
         </select>
         <span id="detected" class="small"></span>
       </div>
-      <label for="ressFile">Colours (optional): RESS.HQR of the same game - only for coloured pictures; without it the models show in grey</label>
+      <label for="ressFile">Colours: RESS.HQR of this same game - for coloured pictures, and needed to convert to another game (with the target game's RESS.HQR under "Convert")</label>
       <input type="file" id="ressFile">
       <span id="palName" class="small">no palette: grey ramps</span>
       <details class="small" style="margin-top:4px"><summary>advanced</summary>
@@ -145,9 +145,9 @@ button.ghost { background: transparent; color: var(--ink); border: 1px solid var
           <option value="demo">LBA2 demo body</option>
         </select>
       </div>
-      <label for="tPalFile">Only between LBA1 and LBA2 (optional): RESS.HQR of the target game, to map the colours. Not needed within LBA2 or from the LBA2 demo to LBA2: the colours are kept as they are</label>
+      <label for="tPalFile">Between different games (LBA1, LBA2 demo, LBA2): RESS.HQR of the target game, to map the colours - together with the source game's RESS.HQR under "Files". Without them the colour numbers are kept as they are (right only within the same game)</label>
       <input type="file" id="tPalFile">
-      <span id="tPalName" class="small">none - colours kept as they are</span>
+      <span id="tPalName" class="small">none - colour numbers kept as they are</span>
       <details class="small" style="margin-top:4px"><summary>advanced</summary>
       <div class="row" style="margin-top:6px">
         <label for="tPalIndex">palette entry in that file (0 in LBA1 and LBA2)</label><input type="number" id="tPalIndex" value="0" min="0">
