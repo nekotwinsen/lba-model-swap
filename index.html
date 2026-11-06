@@ -99,13 +99,14 @@ button.ghost { background: transparent; color: var(--ink); border: 1px solid var
         </select>
         <span id="detected" class="small"></span>
       </div>
-      <label for="ressFile">Palette: RESS.HQR of the same game (or a 768-byte palette)</label>
+      <label for="ressFile">Colours (optional): RESS.HQR of the same game - only for coloured pictures; without it the models show in grey</label>
       <input type="file" id="ressFile">
+      <span id="palName" class="small">no palette: grey ramps</span>
+      <details class="small" style="margin-top:4px"><summary>advanced</summary>
       <div class="row" style="margin-top:6px">
-        <label for="palIndex">entry</label>
+        <label for="palIndex">palette entry in that file (0 in LBA1 and LBA2)</label>
         <input type="number" id="palIndex" value="0" min="0">
-        <span id="palName" class="small">no palette: grey ramps</span>
-      </div>
+      </div></details>
     </section>
     <section>
       <h2>Bodies <span id="count" class="small"></span></h2>
@@ -144,17 +145,18 @@ button.ghost { background: transparent; color: var(--ink); border: 1px solid var
           <option value="demo">LBA2 demo body</option>
         </select>
       </div>
-      <label for="tPalFile">Target palette: RESS.HQR of the target game (for the colour mapping)</label>
+      <label for="tPalFile">Only between LBA1 and LBA2 (optional): RESS.HQR of the target game, to map the colours. Not needed within LBA2 or from the LBA2 demo to LBA2: the colours are kept as they are</label>
       <input type="file" id="tPalFile">
+      <span id="tPalName" class="small">none - colours kept as they are</span>
+      <details class="small" style="margin-top:4px"><summary>advanced</summary>
       <div class="row" style="margin-top:6px">
-        <label for="tPalIndex">entry</label><input type="number" id="tPalIndex" value="0" min="0">
-        <span id="tPalName" class="small">none</span>
-      </div>
+        <label for="tPalIndex">palette entry in that file (0 in LBA1 and LBA2)</label><input type="number" id="tPalIndex" value="0" min="0">
+      </div></details>
       <button id="convBin" disabled>Download body (.bin)</button>
       <label for="tHqrFile" style="margin-top:10px">Replace in HQR: the HQR to copy (it is not changed)</label>
       <input type="file" id="tHqrFile">
       <div class="row" style="margin-top:6px">
-        <label for="tHqrIndex">entry</label><input type="number" id="tHqrIndex" value="0" min="0">
+        <label for="tHqrIndex">model number to replace (as in the target game's list; filled in with the selected model's number)</label><input type="number" id="tHqrIndex" value="0" min="0">
         <span id="tHqrName" class="small"></span>
       </div>
       <button id="convHqr" disabled>Write new HQR</button>
